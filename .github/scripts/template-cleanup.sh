@@ -13,9 +13,7 @@
 #   --model <model>           Claude Code model (default: default)
 #   --languages <langs>       Programming languages for Serena (comma-separated, required)
 #   --serena-prompt <prompt>  Initial prompt for Serena semantic analysis
-#   --tm-system-prompt <p>    Custom system prompt for Task Master
-#   --tm-append-prompt <p>    Additional content to append to Task Master prompt
-#   --tm-permission <mode>    Task Master permission mode (default: default)
+#   --statusline <style>      Statusline style: enhanced (default) or basic
 #   --no-commit               Skip git commit and push
 #   --ci                      CI mode: read from env vars, skip interactive prompts
 #   -y, --yes                 Skip confirmation prompt (for scripted use)
@@ -28,9 +26,7 @@ set -euo pipefail
 # The actual default is handled in load_env_vars()
 CC_MODEL="default"
 SERENA_INITIAL_PROMPT=""
-TM_CUSTOM_SYSTEM_PROMPT=""
-TM_APPEND_SYSTEM_PROMPT=""
-TM_PERMISSION_MODE="default"
+CC_STATUSLINE="enhanced"
 NO_COMMIT=false
 SKIP_CONFIRM=false
 INTERACTIVE_MODE=false
@@ -41,11 +37,9 @@ CI_MODE=false
 # Called before CLI parsing so CLI args can override
 load_env_vars() {
   CC_MODEL="${CC_MODEL:-default}"
+  CC_STATUSLINE="${CC_STATUSLINE:-enhanced}"
   LANGUAGES="${LANGUAGES:-}"
   SERENA_INITIAL_PROMPT="${SERENA_INITIAL_PROMPT:-}"
-  TM_CUSTOM_SYSTEM_PROMPT="${TM_CUSTOM_SYSTEM_PROMPT:-}"
-  TM_APPEND_SYSTEM_PROMPT="${TM_APPEND_SYSTEM_PROMPT:-}"
-  TM_PERMISSION_MODE="${TM_PERMISSION_MODE:-default}"
 }
 
 # Color output
@@ -115,10 +109,9 @@ Options:
                             Note: For C use 'cpp', for JavaScript use 'typescript'
                             Docs: https://oraios.github.io/serena/01-about/020_programming-languages.html
   --serena-prompt <prompt>  Initial prompt/context for Serena semantic analysis
-  --tm-system-prompt <p>    Custom system prompt to override Claude Code default behavior
-  --tm-append-prompt <p>    Additional content to append to Claude Code system prompt
-  --tm-permission <mode>    Task Master permission mode (default: default)
-                            Options: default, acceptEdits, plan, bypassPermissions
+  --statusline <style>      Statusline style (default: enhanced)
+                            Options: enhanced (rich multi-line with rate limits, git, session timer)
+                                     basic (simple one-line: model + context %)
   --no-commit               Skip git commit and push
   --ci                      CI mode: read config from environment variables,
                             skip interactive prompts and repo name check
@@ -135,8 +128,8 @@ Examples:
   # Setup with multiple languages
   ./.github/scripts/template-cleanup.sh --languages python,typescript,bash -y
 
-  # Full setup with custom prompts
-  ./.github/scripts/template-cleanup.sh --model sonnet --languages python --tm-permission acceptEdits -y
+  # Full setup with custom model and serena prompt
+  ./.github/scripts/template-cleanup.sh --model sonnet --languages python --serena-prompt "Focus on API code" -y
 EOF
 }
 
@@ -225,6 +218,16 @@ run_interactive() {
 
   echo ""
 
+  # Statusline selection
+  echo -e "${YELLOW}Statusline Options:${NC}"
+  echo -e "  basic:    Simple one-line display (model + context %)"
+  echo -e "  enhanced: Rich multi-line display with rate limits, git, session timer"
+  echo ""
+  prompt_select "Select statusline style" "enhanced" CC_STATUSLINE \
+    "enhanced" "basic"
+
+  echo ""
+
   # Language selection
   # Sources:
   #   https://oraios.github.io/serena/01-about/020_programming-languages.html
@@ -264,10 +267,6 @@ run_interactive() {
   if prompt_confirm "Configure advanced options?" "n"; then
     echo ""
     prompt_input "Serena initial prompt/context" "" SERENA_INITIAL_PROMPT
-    prompt_input "Task Master custom system prompt" "" TM_CUSTOM_SYSTEM_PROMPT
-    prompt_input "Task Master append system prompt" "" TM_APPEND_SYSTEM_PROMPT
-    prompt_select "Task Master permission mode" "default" TM_PERMISSION_MODE \
-      "default" "acceptEdits" "plan" "bypassPermissions"
   fi
 
   echo ""
@@ -294,16 +293,10 @@ show_config_summary() {
   echo ""
   echo -e "${CYAN}Configuration:${NC}"
   echo "  Claude Model:       $CC_MODEL"
+  echo "  Statusline:         $CC_STATUSLINE"
   echo "  Languages:          $LANGUAGES"
-  echo "  TM Permission Mode: $TM_PERMISSION_MODE"
   if [[ -n "$SERENA_INITIAL_PROMPT" ]]; then
     echo "  Serena Prompt:      $SERENA_INITIAL_PROMPT"
-  fi
-  if [[ -n "$TM_CUSTOM_SYSTEM_PROMPT" ]]; then
-    echo "  TM System Prompt:   $TM_CUSTOM_SYSTEM_PROMPT"
-  fi
-  if [[ -n "$TM_APPEND_SYSTEM_PROMPT" ]]; then
-    echo "  TM Append Prompt:   $TM_APPEND_SYSTEM_PROMPT"
   fi
   echo ""
   echo -e "${CYAN}Options:${NC}"
@@ -313,7 +306,7 @@ show_config_summary() {
   echo ""
   echo -e "${YELLOW}Actions that will be performed:${NC}"
   echo "  1. Substitute template values with project-specific configuration"
-  echo "  2. Remove existing .claude/, .serena/, .taskmaster/ directories"
+  echo "  2. Remove existing .claude/, .serena/ directories"
   echo "  3. Deploy configured templates to project root"
   echo "  4. Remove all template-specific files (README, docs, workflows, etc.)"
   echo "  5. Generate template state manifest (.github/template-state.json)"
@@ -362,10 +355,8 @@ generate_manifest() {
     --arg PROJECT_NAME "$project_name" \
     --arg LANGUAGES "$LANGUAGES" \
     --arg CC_MODEL "$CC_MODEL" \
+    --arg CC_STATUSLINE "$CC_STATUSLINE" \
     --arg SERENA_INITIAL_PROMPT "$SERENA_INITIAL_PROMPT" \
-    --arg TM_CUSTOM_SYSTEM_PROMPT "$TM_CUSTOM_SYSTEM_PROMPT" \
-    --arg TM_APPEND_SYSTEM_PROMPT "$TM_APPEND_SYSTEM_PROMPT" \
-    --arg TM_PERMISSION_MODE "$TM_PERMISSION_MODE" \
     '{
       schema_version: $schema_version,
       upstream_repo: $upstream_repo,
@@ -375,10 +366,8 @@ generate_manifest() {
         PROJECT_NAME: $PROJECT_NAME,
         LANGUAGES: $LANGUAGES,
         CC_MODEL: $CC_MODEL,
-        SERENA_INITIAL_PROMPT: $SERENA_INITIAL_PROMPT,
-        TM_CUSTOM_SYSTEM_PROMPT: $TM_CUSTOM_SYSTEM_PROMPT,
-        TM_APPEND_SYSTEM_PROMPT: $TM_APPEND_SYSTEM_PROMPT,
-        TM_PERMISSION_MODE: $TM_PERMISSION_MODE
+        CC_STATUSLINE: $CC_STATUSLINE,
+        SERENA_INITIAL_PROMPT: $SERENA_INITIAL_PROMPT
       }
     }' >.github/template-state.json
 
@@ -402,6 +391,11 @@ execute_cleanup() {
     sed -i "s/\"model\": \".*\"/\"model\": \"$CC_MODEL\"/g" "$cc_settings_file"
   fi
 
+  # Claude Code Statusline
+  if [[ "$CC_STATUSLINE" == "basic" ]]; then
+    sed -i "s/statusline_enhanced\.sh/statusline.sh/g" "$cc_settings_file"
+  fi
+
   # Serena MCP Settings
   local serena_settings_file=".github/templates/serena/project.yml"
   # Project name - always substitute with repo name
@@ -420,28 +414,12 @@ execute_cleanup() {
     sed -i "s/initial_prompt: \"\"/initial_prompt: \"$SERENA_INITIAL_PROMPT\"/g" "$serena_settings_file"
   fi
 
-  # TaskMaster MCP Settings
-  local tm_settings_file=".github/templates/taskmaster/config.json"
-  # Project name - always substitute with repo name
-  sed -i "s/\"projectName\": \".*\"/\"projectName\": \"$name\"/g" "$tm_settings_file"
-  # Task Master prompts - only substitute if provided
-  if [ -n "$TM_CUSTOM_SYSTEM_PROMPT" ]; then
-    sed -i "s/\"customSystemPrompt\": \"\"/\"customSystemPrompt\": \"$TM_CUSTOM_SYSTEM_PROMPT\"/g" "$tm_settings_file"
-  fi
-  if [ -n "$TM_APPEND_SYSTEM_PROMPT" ]; then
-    sed -i "s/\"appendSystemPrompt\": \"\"/\"appendSystemPrompt\": \"$TM_APPEND_SYSTEM_PROMPT\"/g" "$tm_settings_file"
-  fi
-  if [ -n "$TM_PERMISSION_MODE" ]; then
-    sed -i "s/\"permissionMode\": \"\"/\"permissionMode\": \"$TM_PERMISSION_MODE\"/g" "$tm_settings_file"
-  fi
-
   log_step "Removing existing configuration directories..."
-  rm -rf .claude .serena .taskmaster
+  rm -rf .claude .serena
 
   log_step "Deploying templates to destination locations..."
   cp -r .github/templates/claude ./.claude
   cp -r .github/templates/serena ./.serena
-  cp -r .github/templates/taskmaster ./.taskmaster
   if [[ -f .github/scripts/bootstrap.sh ]]; then
     cp .github/scripts/bootstrap.sh .
   fi
@@ -451,6 +429,13 @@ execute_cleanup() {
   rm -f .github/scripts/template-cleanup.sh
   rm -f .github/workflows/template-cleanup.yml
 
+  log_step "Preserving docs/update.sh..."
+  local tmpfile=""
+  if [[ -f docs/update.sh ]]; then
+    tmpfile="$(mktemp)"
+    cp docs/update.sh "$tmpfile"
+  fi
+
   log_step "Cleaning up template-specific files..."
   find . -mindepth 1 -maxdepth 1 \
     ! -name '.git' \
@@ -458,9 +443,15 @@ execute_cleanup() {
     ! -name '.github' \
     ! -name '.claude' \
     ! -name '.serena' \
-    ! -name '.taskmaster' \
     ! -name 'bootstrap.sh' \
     -exec rm -rf {} +
+
+  if [[ -n "$tmpfile" ]]; then
+    mkdir -p docs
+    cp "$tmpfile" docs/update.sh
+    chmod +x docs/update.sh
+    rm -f "$tmpfile"
+  fi
 
   log_step "Generating template state manifest..."
   generate_manifest "$name"
@@ -510,16 +501,8 @@ while [[ $# -gt 0 ]]; do
     SERENA_INITIAL_PROMPT="$2"
     shift 2
     ;;
-  --tm-system-prompt)
-    TM_CUSTOM_SYSTEM_PROMPT="$2"
-    shift 2
-    ;;
-  --tm-append-prompt)
-    TM_APPEND_SYSTEM_PROMPT="$2"
-    shift 2
-    ;;
-  --tm-permission)
-    TM_PERMISSION_MODE="$2"
+  --statusline)
+    CC_STATUSLINE="$2"
     shift 2
     ;;
   --no-commit)

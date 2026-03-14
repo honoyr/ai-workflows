@@ -6,7 +6,7 @@ Starter template repo for all your Claude Code needs — pre-configured MCP serv
 
 ## About
 
-This is a template repository that gives you a ready-to-use Claude Code development environment. It ships with mcp servers, development-related skills, task orchestration tooling, hooks, slash commands — all configured and wired together.
+This is a template repository that gives you a ready-to-use Claude Code development environment. It ships with mcp servers, development-related skills, hooks, slash commands — all configured and wired together.
 
 > [!NOTE]
 > We focus on collaborative development. Most claude- and mcp-related settings are project-scoped (`.claude/settings.json`) so they can be shared across your team via git, rather than living in user-scoped `~/.claude.local.json`.
@@ -15,14 +15,13 @@ This is a template repository that gives you a ready-to-use Claude Code developm
 
 ### MCP Servers
 
-Four servers, configured at user-level (`~/.claude.json`) to keep API keys out of the repo:
+Three servers, configured at user-level (`~/.claude.json`) to keep API keys out of the repo:
 
-| Server                                                                | Purpose                                                                                |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| **[Context7](https://context7.com/)**                                 | Up-to-date library documentation and code examples                                     |
-| **[Serena](https://github.com/oraios/serena)**                        | Semantic code analysis via LSP — symbol navigation, reference tracking, targeted reads |
-| **[Task Master](https://github.com/eyaltoledano/claude-task-master)** | AI-powered task management — PRD parsing, complexity analysis, workflow orchestration  |
-| **[Pal](https://github.com/BeehiveInnovations/pal-mcp-server)**       | Multi-model AI integration — chat, debugging, code review, planning, security audit    |
+| Server                                                          | Purpose                                                                                |
+| --------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| **[Context7](https://context7.com/)**                           | Up-to-date library documentation and code examples                                     |
+| **[Serena](https://github.com/oraios/serena)**                  | Semantic code analysis via LSP — symbol navigation, reference tracking, targeted reads |
+| **[Pal](https://github.com/BeehiveInnovations/pal-mcp-server)** | Multi-model AI integration — chat, debugging, code review, planning, security audit    |
 
 ### Skills (`.claude/skills/`)
 
@@ -30,7 +29,7 @@ Skills are specialized workflows Claude invokes during different development pha
 
 | Skill                      | When to use                                                                                                                                                              |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **analysis-process**       | Pre-implementation. Turns ideas/specs into PRDs, design docs, and implementation plans.                                                                                  |
+| **analysis-process**       | Pre-implementation. Turns ideas/specs into design docs, implementation plans, and task lists.                                                                            |
 | **implementation-process** | Execute an implementation plan with batched steps and architect review checkpoints.                                                                                      |
 | **testing-process**        | After writing code. Guidelines for test coverage — table-driven tests, mocking, integration, benchmarks.                                                                 |
 | **documentation-process**  | Post-implementation. Updates ARCHITECTURE.md, TESTING.md, and records ADRs.                                                                                              |
@@ -38,30 +37,11 @@ Skills are specialized workflows Claude invokes during different development pha
 | **solid-code-review**      | Code review with a senior-engineer lens. Checks SOLID principles, security, code quality. Includes language-specific checklists for Go, Java, JS/TS, Kotlin, and Python. |
 | **cove**                   | Chain-of-Verification prompting. Two modes: standard (prompt-based) and isolated (sub-agent). For high-stakes accuracy and fact-checking.                                |
 
-### Sub-Agents (`.claude/agents/`)
-
-Three agents for task-driven development workflows:
-
-| Agent                 | Role                                                                                                                 |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| **task-orchestrator** | Analyzes task dependencies, identifies parallelization opportunities, deploys executors. Runs on Opus.               |
-| **task-executor**     | Implements specific tasks — transforms task specs into working code with progress tracking. Runs on Sonnet.          |
-| **task-checker**      | QA verification — checks implementations against requirements, runs tests before marking tasks done. Runs on Sonnet. |
-
 ### Commands (`.claude/commands/`)
 
-Slash commands organized hierarchically:
-
-- **Task Master** (`/project:tm/`) — 47 commands covering the full task lifecycle:
-  - **Setup**: `init`, `install-taskmaster`, `setup-models`
-  - **Daily workflow**: `next`, `list`, `show`, `set-status/to-{done,in-progress,review,...}`
-  - **Task management**: `add-task`, `update`, `expand`, `remove-task`
-  - **Analysis**: `analyze-complexity`, `complexity-report`, `analyze-project`
-  - **Dependencies**: `add-dependency`, `remove-dependency`, `validate-dependencies`, `fix-dependencies`
-  - **Subtasks**: `add-subtask`, `remove-subtask`, `clear-subtasks`
-  - **Workflows**: `smart-workflow`, `command-pipeline`, `auto-implement-tasks`
-  - Full reference: `.claude/TM_COMMANDS_GUIDE.md`
 - **CoVe** (`/project:cove/`) — 2 commands for Chain-of-Verification prompting (standard and isolated modes)
+- **Migrate from Task Master** (`/project:migrate-from-taskmaster`) — one-time migration from Task Master MCP to native markdown task tracking
+- **Sync Workflow** (`/project:sync-workflow [version]`) — update the template-sync workflow and script from upstream (`latest`, `master`, or a specific tag like `v0.3.0`)
 
 ### Hooks (`.claude/hooks/`)
 
@@ -69,10 +49,9 @@ Slash commands organized hierarchically:
 
 ### Other Configuration
 
-- **Permission allowlist/denylist** (`.claude/settings.json`) — auto-approves safe tools (context7, serena read-only, task master, pal code review) while blocking dangerous ones
-- **Status line** (`.claude/scripts/statusline.sh`) — minimalistic statusline that shows current model and context window usage percentage
+- **Permission allowlist/denylist** (`.claude/settings.json`) — auto-approves safe tools (context7, serena, pal code review) while blocking dangerous ones
+- **Status line** (`.claude/scripts/statusline_enhanced.sh`) — rich statusline with model, context %, git branch, session duration, thinking mode, and rate limits. Themes: set `CLAUDE_STATUSLINE_THEME` to `darcula`, `nord`, or `catppuccin`, and `CLAUDE_STATUSLINE_MODE` to `dark` (default) or `light` to match your terminal background
 - **Serena config** (`.serena/project.yml`) — language detection, gitignore integration, encoding settings
-- **Task Master config** (`.taskmaster/config.json`) — AI model roles (main/research/fallback), task defaults
 
 ### Template Infrastructure
 
@@ -127,16 +106,6 @@ Slash commands organized hierarchically:
     ],
     "env": {}
   },
-  "task-master-ai": {
-    "type": "stdio",
-    "command": "npx",
-    "args": [
-      "-y",
-      "--package=task-master-ai",
-      "task-master-ai"
-    ],
-    "headers": {}
-  },
   "pal": {
     "command": "sh",
     "args": [
@@ -151,7 +120,7 @@ Slash commands organized hierarchically:
       "DEFAULT_THINKING_MODE_THINKDEEP": "high",
       "GEMINI_API_KEY": "YOUR_GEMINI_API_KEY",
       # see https://github.com/BeehiveInnovations/pal-mcp-server/blob/main/docs/configuration.md#model-usage-restrictions
-      "GOOGLE_ALLOWED_MODELS": "gemini-3-pro-preview,gemini-2.5-pro,gemini-2.5-flash"
+      "GOOGLE_ALLOWED_MODELS": "gemini-3.1-pro-preview,gemini-3-flash-preview"
     }
   }
 }
@@ -176,12 +145,6 @@ See [Pal configuration docs](https://github.com/BeehiveInnovations/pal-mcp-serve
 >       "."
 >     ],
 >     "env": {}
->   },
->   "task-master-ai": {
->     "type": "stdio",
->     "command": "task-master-ai",
->     "args": [],
->     "headers": {}
 >   },
 >   "pal": {
 >     "command": "pal-mcp-server",
@@ -210,15 +173,6 @@ See [Pal configuration docs](https://github.com/BeehiveInnovations/pal-mcp-serve
 > [!TIP]
 > Take a look at serena [project.yaml](./.github/templates/serena/project.yml) configuration file for more details.
 
-**Task Master:**
-
-- `TM_CUSTOM_SYSTEM_PROMPT` — override Claude Code's default system prompt
-- `TM_APPEND_SYSTEM_PROMPT` — append to the system prompt
-- `TM_PERMISSION_MODE` — permission mode for file system operations
-
-  > [!TIP]
-  > See [Task Master advanced settings](https://github.com/eyaltoledano/claude-task-master/blob/main/docs/examples/claude-code-usage.md#advanced-settings-usage) for details on these parameters.
-
 4. Clone your new repo and cd into it
 
    Run `claude /mcp`, you should see the mcp servers configured and active:
@@ -230,8 +184,7 @@ See [Pal configuration docs](https://github.com/BeehiveInnovations/pal-mcp-serve
    │                                                                    │
    │ ❯ 1. context7                  ✔ connected · Enter to view details │
    │   2. serena                    ✔ connected · Enter to view details │
-   │   3. task-master-ai            ✔ connected · Enter to view details │
-   │   4. pal                       ✔ connected · Enter to view details │
+   │   3. pal                       ✔ connected · Enter to view details │
    ╰────────────────────────────────────────────────────────────────────╯
    ```
 
@@ -273,9 +226,9 @@ Repos created from this template can pull configuration updates via the **Templa
 
 ### What Gets Synced
 
-**Updated:** `.claude/` (commands, skills, agents, scripts, settings), `.serena/`, `.taskmaster/` configs, and the sync infrastructure itself
+**Updated:** `.claude/` (commands, skills, agents, scripts, settings), `.serena/`, and the sync infrastructure itself
 
-**Preserved:** Project-specific values (name, language, prompts), user-scoped files (tasks, PRDs, local settings), gitignored files
+**Preserved:** Project-specific values (name, language, prompts), user-scoped files (local settings), gitignored files
 
 ### Sync Exclusions
 
@@ -301,7 +254,7 @@ Edit `.github/template-state.json` and add a `sync_exclusions` array:
 
 - Patterns use glob syntax where `*` matches any characters including directory separators
 - Patterns are matched against project-relative paths (e.g., `.claude/commands/cove/cove.md`)
-- Common patterns: `.claude/commands/cove/*` (entire directory), `.taskmaster/templates/example_prd.txt` (single file)
+- Common patterns: `.claude/commands/cove/*` (entire directory), `.serena/project.yml` (single file)
 
 **Behavior:**
 
@@ -309,6 +262,57 @@ Edit `.github/template-state.json` and add a `sync_exclusions` array:
 - Excluded files are NOT updated if they exist in both places
 - Excluded files are NOT flagged as deleted if they exist locally but not upstream
 - Excluded files appear as "Excluded" in the sync report for transparency
+
+### Migrating from Task Master
+
+Task Master MCP was removed in favor of native markdown-based task tracking integrated into the `analysis-process` and `implementation-process` skills.
+
+The easiest way to migrate is to run the migration command in Claude Code:
+
+```
+/project:migrate-from-taskmaster
+```
+
+It will port pending tasks, clean up TM files, update configs, and walk you through each step with confirmation prompts.
+
+<details>
+<summary>Manual migration steps</summary>
+
+If you prefer to migrate manually, follow these steps after syncing:
+
+1. **Port any pending tasks** to the new format: create `/docs/wip/[feature]/tasks.md` files following the [example task file](./.github/templates/claude/skills/analysis-process/example-tasks.md). Completed tasks don't need porting.
+
+1. **Remove Task Master files and config:**
+
+   ```bash
+   rm -rf .taskmaster
+   rm -rf .claude/commands/tm
+   rm -f .claude/TM_COMMANDS_GUIDE.md
+   rm -f .claude/agents/task-orchestrator.md
+   rm -f .claude/agents/task-executor.md
+   rm -f .claude/agents/task-checker.md
+   ```
+
+3. **Remove Task Master from `~/.claude.json`:** delete the `task-master-ai` entry from your `mcpServers` config.
+
+4. **Remove TM variables from `.github/template-state.json`:** delete `TM_CUSTOM_SYSTEM_PROMPT`, `TM_APPEND_SYSTEM_PROMPT`, and `TM_PERMISSION_MODE` from the `variables` object.
+
+5. **Remove TM references from `CLAUDE.md`:** delete the "Task Master Integration" and "Task Master AI Instructions" sections (including the `@./.taskmaster/CLAUDE.md` import).
+
+6. **Update the template-sync workflow** ([why?](https://github.com/serpro69/claude-starter-kit/issues/17)): the old workflow contains taskmaster-specific sync logic that will break future syncs. Run `/project:sync-workflow latest` or manually replace both files:
+
+   ```bash
+   VERSION="v0.3.0"  # or use latest tag
+   curl -fsSL "https://raw.githubusercontent.com/serpro69/claude-starter-kit/${VERSION}/.github/workflows/template-sync.yml" \
+     -o .github/workflows/template-sync.yml
+   curl -fsSL "https://raw.githubusercontent.com/serpro69/claude-starter-kit/${VERSION}/.github/scripts/template-sync.sh" \
+     -o .github/scripts/template-sync.sh
+   chmod +x .github/scripts/template-sync.sh
+   ```
+
+Task tracking now lives in simple markdown files (`/docs/wip/[feature]/tasks.md`) created by the `analysis-process` skill and consumed by `implementation-process`. No external MCP server required.
+
+</details>
 
 ### Migration for Existing Repositories
 
@@ -324,10 +328,7 @@ If your repo was created before the sync feature (or even if your repo wasn't cr
     "PROJECT_NAME": "my-cool-project",
     "LANGUAGES": "go",
     "CC_MODEL": "default",
-    "SERENA_INITIAL_PROMPT": "",
-    "TM_CUSTOM_SYSTEM_PROMPT": "",
-    "TM_APPEND_SYSTEM_PROMPT": "",
-    "TM_PERMISSION_MODE": "default"
+    "SERENA_INITIAL_PROMPT": ""
   }
 }
 ```
@@ -407,26 +408,15 @@ for test in test/test-*.sh; do $test; done
 
 ```
 .claude/
-├── agents/                 # 3 sub-agents (orchestrator, executor, checker)
 ├── commands/
-│   ├── cove/              # 2 CoVe verification commands
-│   └── tm/                # 47 Task Master commands
+│   └── cove/              # 2 CoVe verification commands
 ├── hooks/                 # Bash validation hook config
 ├── scripts/               # statusline.sh, validate-bash.sh
 ├── skills/                # 7 development workflow skills
-├── settings.json          # Shared permission config
-└── TM_COMMANDS_GUIDE.md   # Task Master command reference
+└── settings.json          # Shared permission config
 
 .serena/
 └── project.yml            # Serena LSP configuration
-
-.taskmaster/
-├── config.json            # AI model configuration
-├── docs/                  # PRDs and requirements
-├── reports/               # Analysis reports
-├── tasks/                 # Task database and generated files
-├── templates/             # Example PRD template
-└── CLAUDE.md              # Task Master integration guide (400+ lines)
 
 .github/
 ├── scripts/               # template-cleanup.sh, template-sync.sh, bootstrap.sh

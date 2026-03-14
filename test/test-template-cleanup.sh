@@ -29,10 +29,8 @@ cd "$test_dir"
 PROJECT_NAME="test-project"
 LANGUAGES="typescript"
 CC_MODEL="sonnet"
+CC_STATUSLINE="enhanced"
 SERENA_INITIAL_PROMPT=""
-TM_CUSTOM_SYSTEM_PROMPT=""
-TM_APPEND_SYSTEM_PROMPT=""
-TM_PERMISSION_MODE="default"
 
 generate_manifest "test-project" >/dev/null 2>&1
 
@@ -46,10 +44,8 @@ cd "$test_dir"
 PROJECT_NAME="test-project"
 LANGUAGES="bash"
 CC_MODEL=""
+CC_STATUSLINE="enhanced"
 SERENA_INITIAL_PROMPT=""
-TM_CUSTOM_SYSTEM_PROMPT=""
-TM_APPEND_SYSTEM_PROMPT=""
-TM_PERMISSION_MODE=""
 
 generate_manifest "test-project" >/dev/null 2>&1
 
@@ -73,10 +69,8 @@ cd "$test_dir"
 PROJECT_NAME="test-project"
 LANGUAGES="bash"
 CC_MODEL=""
+CC_STATUSLINE="enhanced"
 SERENA_INITIAL_PROMPT=""
-TM_CUSTOM_SYSTEM_PROMPT=""
-TM_APPEND_SYSTEM_PROMPT=""
-TM_PERMISSION_MODE=""
 
 generate_manifest "test-project" >/dev/null 2>&1
 
@@ -91,10 +85,8 @@ cd "$test_dir"
 PROJECT_NAME="test-project"
 LANGUAGES="bash"
 CC_MODEL=""
+CC_STATUSLINE="enhanced"
 SERENA_INITIAL_PROMPT=""
-TM_CUSTOM_SYSTEM_PROMPT=""
-TM_APPEND_SYSTEM_PROMPT=""
-TM_PERMISSION_MODE=""
 unset UPSTREAM_REPO 2>/dev/null || true
 
 generate_manifest "test-project" >/dev/null 2>&1
@@ -110,10 +102,8 @@ cd "$test_dir"
 PROJECT_NAME="test-project"
 LANGUAGES="bash"
 CC_MODEL=""
+CC_STATUSLINE="enhanced"
 SERENA_INITIAL_PROMPT=""
-TM_CUSTOM_SYSTEM_PROMPT=""
-TM_APPEND_SYSTEM_PROMPT=""
-TM_PERMISSION_MODE=""
 # Use a valid GitHub repo to test UPSTREAM_REPO is captured correctly
 UPSTREAM_REPO="serpro69/claude-starter-kit"
 
@@ -131,10 +121,8 @@ cd "$test_dir"
 PROJECT_NAME="test-project"
 LANGUAGES="bash"
 CC_MODEL=""
+CC_STATUSLINE="enhanced"
 SERENA_INITIAL_PROMPT=""
-TM_CUSTOM_SYSTEM_PROMPT=""
-TM_APPEND_SYSTEM_PROMPT=""
-TM_PERMISSION_MODE=""
 
 generate_manifest "test-project" >/dev/null 2>&1
 
@@ -160,10 +148,8 @@ cd "$test_dir"
 PROJECT_NAME="my-awesome-project"
 LANGUAGES="bash"
 CC_MODEL=""
+CC_STATUSLINE="enhanced"
 SERENA_INITIAL_PROMPT=""
-TM_CUSTOM_SYSTEM_PROMPT=""
-TM_APPEND_SYSTEM_PROMPT=""
-TM_PERMISSION_MODE=""
 
 generate_manifest "my-awesome-project" >/dev/null 2>&1
 
@@ -171,17 +157,15 @@ project_name=$(jq -r '.variables.PROJECT_NAME' .github/template-state.json)
 assert_equals "my-awesome-project" "$project_name" "PROJECT_NAME captured correctly"
 cd "$REPO_ROOT"
 
-log_test "Manifest captures all 7 variables"
+log_test "Manifest captures all 5 variables"
 test_dir=$(create_temp_git_repo "v1.0.0")
 cd "$test_dir"
 
 PROJECT_NAME="test"
 LANGUAGES="python"
 CC_MODEL="opus"
+CC_STATUSLINE="enhanced"
 SERENA_INITIAL_PROMPT="hello"
-TM_CUSTOM_SYSTEM_PROMPT="custom"
-TM_APPEND_SYSTEM_PROMPT="append"
-TM_PERMISSION_MODE="full"
 
 generate_manifest "test" >/dev/null 2>&1
 
@@ -189,10 +173,8 @@ generate_manifest "test" >/dev/null 2>&1
 assert_equals "test" "$(jq -r '.variables.PROJECT_NAME' .github/template-state.json)" "PROJECT_NAME"
 assert_equals "python" "$(jq -r '.variables.LANGUAGES' .github/template-state.json)" "LANGUAGES"
 assert_equals "opus" "$(jq -r '.variables.CC_MODEL' .github/template-state.json)" "CC_MODEL"
+assert_equals "enhanced" "$(jq -r '.variables.CC_STATUSLINE' .github/template-state.json)" "CC_STATUSLINE"
 assert_equals "hello" "$(jq -r '.variables.SERENA_INITIAL_PROMPT' .github/template-state.json)" "SERENA_INITIAL_PROMPT"
-assert_equals "custom" "$(jq -r '.variables.TM_CUSTOM_SYSTEM_PROMPT' .github/template-state.json)" "TM_CUSTOM_SYSTEM_PROMPT"
-assert_equals "append" "$(jq -r '.variables.TM_APPEND_SYSTEM_PROMPT' .github/template-state.json)" "TM_APPEND_SYSTEM_PROMPT"
-assert_equals "full" "$(jq -r '.variables.TM_PERMISSION_MODE' .github/template-state.json)" "TM_PERMISSION_MODE"
 cd "$REPO_ROOT"
 
 log_test "Manifest handles empty string values for optional fields"
@@ -202,10 +184,8 @@ cd "$test_dir"
 PROJECT_NAME="test"
 LANGUAGES="bash" # LANGUAGES is now required, use valid value
 CC_MODEL=""
+CC_STATUSLINE="enhanced"
 SERENA_INITIAL_PROMPT=""
-TM_CUSTOM_SYSTEM_PROMPT=""
-TM_APPEND_SYSTEM_PROMPT=""
-TM_PERMISSION_MODE=""
 
 generate_manifest "test" >/dev/null 2>&1
 
@@ -230,10 +210,8 @@ cd "$test_dir"
 PROJECT_NAME="test"
 LANGUAGES="bash"
 CC_MODEL=""
+CC_STATUSLINE="enhanced"
 SERENA_INITIAL_PROMPT='Say "hello" to the world'
-TM_CUSTOM_SYSTEM_PROMPT=""
-TM_APPEND_SYSTEM_PROMPT=""
-TM_PERMISSION_MODE=""
 
 generate_manifest "test" >/dev/null 2>&1
 
@@ -248,15 +226,13 @@ cd "$test_dir"
 PROJECT_NAME="test"
 LANGUAGES="bash"
 CC_MODEL=""
-SERENA_INITIAL_PROMPT=""
-TM_CUSTOM_SYSTEM_PROMPT='Path: C:\Users\test'
-TM_APPEND_SYSTEM_PROMPT=""
-TM_PERMISSION_MODE=""
+CC_STATUSLINE="enhanced"
+SERENA_INITIAL_PROMPT='Path: C:\Users\test'
 
 generate_manifest "test" >/dev/null 2>&1
 
-tm_custom=$(jq -r '.variables.TM_CUSTOM_SYSTEM_PROMPT' .github/template-state.json)
-assert_equals 'Path: C:\Users\test' "$tm_custom" "Backslashes preserved in prompt"
+serena_prompt=$(jq -r '.variables.SERENA_INITIAL_PROMPT' .github/template-state.json)
+assert_equals 'Path: C:\Users\test' "$serena_prompt" "Backslashes preserved in prompt"
 cd "$REPO_ROOT"
 
 log_test "Manifest handles newlines in prompts"
@@ -266,16 +242,14 @@ cd "$test_dir"
 PROJECT_NAME="test"
 LANGUAGES="bash"
 CC_MODEL=""
-SERENA_INITIAL_PROMPT=""
-TM_CUSTOM_SYSTEM_PROMPT=""
-TM_APPEND_SYSTEM_PROMPT=$'Line 1\nLine 2'
-TM_PERMISSION_MODE=""
+CC_STATUSLINE="enhanced"
+SERENA_INITIAL_PROMPT=$'Line 1\nLine 2'
 
 generate_manifest "test" >/dev/null 2>&1
 
-tm_append=$(jq -r '.variables.TM_APPEND_SYSTEM_PROMPT' .github/template-state.json)
+serena_prompt=$(jq -r '.variables.SERENA_INITIAL_PROMPT' .github/template-state.json)
 expected=$'Line 1\nLine 2'
-assert_equals "$expected" "$tm_append" "Newlines preserved in prompt"
+assert_equals "$expected" "$serena_prompt" "Newlines preserved in prompt"
 cd "$REPO_ROOT"
 
 log_test "Manifest handles hyphens and underscores in project name"
@@ -285,10 +259,8 @@ cd "$test_dir"
 PROJECT_NAME="my-project_v2.0"
 LANGUAGES="bash"
 CC_MODEL=""
+CC_STATUSLINE="enhanced"
 SERENA_INITIAL_PROMPT=""
-TM_CUSTOM_SYSTEM_PROMPT=""
-TM_APPEND_SYSTEM_PROMPT=""
-TM_PERMISSION_MODE=""
 
 generate_manifest "my-project_v2.0" >/dev/null 2>&1
 
@@ -313,10 +285,8 @@ cd "$test_dir"
 PROJECT_NAME="test"
 LANGUAGES="bash"
 CC_MODEL=""
+CC_STATUSLINE="enhanced"
 SERENA_INITIAL_PROMPT=""
-TM_CUSTOM_SYSTEM_PROMPT=""
-TM_APPEND_SYSTEM_PROMPT=""
-TM_PERMISSION_MODE=""
 unset UPSTREAM_REPO 2>/dev/null || true
 
 # This requires network access to the actual upstream repo
@@ -342,10 +312,8 @@ cd "$test_dir"
 PROJECT_NAME="test"
 LANGUAGES="bash"
 CC_MODEL=""
+CC_STATUSLINE="enhanced"
 SERENA_INITIAL_PROMPT=""
-TM_CUSTOM_SYSTEM_PROMPT=""
-TM_APPEND_SYSTEM_PROMPT=""
-TM_PERMISSION_MODE=""
 UPSTREAM_REPO="serpro69/claude-starter-kit"
 
 if generate_manifest "test" >/dev/null 2>&1; then
@@ -377,10 +345,8 @@ cd "$test_dir"
 PROJECT_NAME="schema-test"
 LANGUAGES="go"
 CC_MODEL="sonnet"
+CC_STATUSLINE="enhanced"
 SERENA_INITIAL_PROMPT=""
-TM_CUSTOM_SYSTEM_PROMPT=""
-TM_APPEND_SYSTEM_PROMPT=""
-TM_PERMISSION_MODE="default"
 
 generate_manifest "schema-test" >/dev/null 2>&1
 
@@ -410,10 +376,8 @@ rm -rf .github 2>/dev/null || true
 PROJECT_NAME="test"
 LANGUAGES="bash"
 CC_MODEL=""
+CC_STATUSLINE="enhanced"
 SERENA_INITIAL_PROMPT=""
-TM_CUSTOM_SYSTEM_PROMPT=""
-TM_APPEND_SYSTEM_PROMPT=""
-TM_PERMISSION_MODE=""
 
 generate_manifest "test" >/dev/null 2>&1
 
@@ -430,10 +394,8 @@ echo '{"old": "manifest"}' >.github/template-state.json
 PROJECT_NAME="new-project"
 LANGUAGES="bash"
 CC_MODEL=""
+CC_STATUSLINE="enhanced"
 SERENA_INITIAL_PROMPT=""
-TM_CUSTOM_SYSTEM_PROMPT=""
-TM_APPEND_SYSTEM_PROMPT=""
-TM_PERMISSION_MODE=""
 
 generate_manifest "new-project" >/dev/null 2>&1
 
