@@ -71,7 +71,7 @@ Skills are specialized workflows Claude invokes during different development pha
 ### API Keys
 
 - [Context7](https://context7.com/) API key
-- Gemini API key for [Pal](https://github.com/BeehiveInnovations/pal-mcp-server) (or [any other provider](https://github.com/BeehiveInnovations/pal-mcp-server/blob/main/docs/getting-started.md))
+- An API key for [Pal](https://github.com/BeehiveInnovations/pal-mcp-server) — supports [Gemini](https://github.com/BeehiveInnovations/pal-mcp-server/blob/main/docs/getting-started.md), [Azure OpenAI](https://github.com/BeehiveInnovations/pal-mcp-server/blob/main/docs/azure_openai.md), OpenAI, OpenRouter, and more
 
 ### MCP Server Configuration
 
@@ -127,6 +127,109 @@ Skills are specialized workflows Claude invokes during different development pha
 ```
 
 See [Pal configuration docs](https://github.com/BeehiveInnovations/pal-mcp-server/blob/main/docs/configuration.md) for model and thinking mode options.
+
+</details>
+
+<details>
+<summary>Using Pal with Azure OpenAI</summary>
+
+Pal supports [Azure OpenAI](https://github.com/BeehiveInnovations/pal-mcp-server/blob/main/docs/azure_openai.md) as a provider, letting you use models deployed in Azure AI Foundry (GPT-5-mini, Kimi-K2.5, o3, etc.).
+
+#### 1. Set up Azure AI Foundry
+
+1. In the [Azure Portal](https://portal.azure.com), search for **Azure OpenAI** and create a resource (or use an existing one)
+2. Open your resource in [Azure AI Foundry](https://ai.azure.com) → **Deployments** → **Deploy model**
+3. Deploy the model(s) you want (e.g. `gpt-5-mini`, `Kimi-K2.5`) — note the **deployment name** exactly as shown
+4. Copy your **Endpoint** (e.g. `https://your-resource.openai.azure.com/`) and **API Key** from the resource's Keys & Endpoint page
+
+#### 2. Create a models config file
+
+Create `.claude/pal/azure_models.json` with your deployed models. The `deployment` field **must match exactly** the deployment name in Azure:
+
+```json
+{
+  "models": [
+    {
+      "model_name": "gpt-5-mini",
+      "deployment": "gpt-5-mini",
+      "friendly_name": "GPT-5 Mini",
+      "intelligence_score": 15,
+      "context_window": 400000,
+      "max_output_tokens": 128000,
+      "supports_temperature": true,
+      "aliases": ["gpt5-mini", "gpt5mini", "5mini"]
+    },
+    {
+      "model_name": "Kimi-K2.5",
+      "deployment": "Kimi-K2.5",
+      "friendly_name": "Kimi K2.5",
+      "intelligence_score": 17,
+      "context_window": 131072,
+      "max_output_tokens": 16384,
+      "supports_temperature": true,
+      "aliases": ["kimi", "k2.5"]
+    }
+  ]
+}
+```
+
+<details>
+<summary>Model config fields reference</summary>
+
+| Field | Required | Description |
+|---|---|---|
+| `model_name` | Yes | Model identifier used in PAL tool calls |
+| `deployment` | Yes | Must match Azure deployment name **exactly** (case-sensitive) |
+| `friendly_name` | Yes | Human-readable label shown in `listmodels` |
+| `intelligence_score` | No | 1–20 rating for auto-mode model selection |
+| `context_window` | No | Max input + output tokens |
+| `max_output_tokens` | No | Max tokens per response |
+| `supports_temperature` | No | Whether temperature parameter is supported |
+| `aliases` | No | Short names for convenience (e.g. `kimi` instead of `Kimi-K2.5`) |
+| `use_openai_response_api` | No | Set `true` for O-series reasoning models |
+
+</details>
+
+#### 3. Configure the MCP server
+
+Add the Pal server to `~/.claude.json` under `mcpServers`:
+
+```json
+"pal": {
+  "command": "sh",
+  "args": [
+    "-c",
+    "$HOME/.local/bin/uvx --from git+https://github.com/BeehiveInnovations/pal-mcp-server.git pal-mcp-server"
+  ],
+  "env": {
+    "PATH": "/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin",
+    "DEFAULT_MODEL": "auto",
+    "AZURE_OPENAI_API_KEY": "your-azure-api-key",
+    "AZURE_OPENAI_ENDPOINT": "https://your-resource.openai.azure.com/",
+    "AZURE_MODELS_CONFIG_PATH": "/absolute/path/to/.claude/pal/azure_models.json"
+  }
+}
+```
+
+> [!IMPORTANT]
+> - `AZURE_OPENAI_API_KEY` must be the **actual key value**, not a `$VAR` reference — MCP env blocks don't perform shell expansion
+> - `AZURE_OPENAI_ENDPOINT` must use the `https://your-resource.openai.azure.com/` format (the standard Azure OpenAI endpoint, **not** the Azure AI Inference endpoint `*.services.ai.azure.com`)
+> - `AZURE_MODELS_CONFIG_PATH` must be an **absolute path** to your models config file
+
+#### 4. Verify
+
+Restart Claude Code, then run `/mcp` to confirm Pal is connected. Ask Claude to call `listmodels` — your Azure deployments should appear:
+
+```
+## Azure OpenAI ✅
+**Status**: Configured and available
+
+**Models**:
+- `Kimi-K2.5` - 131K context
+- `gpt-5-mini` - 400K context
+```
+
+You can then use models by name: *"use kimi to review this code"* or *"ask gpt5-mini to summarize this file"*.
 
 </details>
 
@@ -411,6 +514,8 @@ for test in test/test-*.sh; do $test; done
 ├── commands/
 │   └── cove/              # 2 CoVe verification commands
 ├── hooks/                 # Bash validation hook config
+├── pal/
+│   └── azure_models.json  # Azure OpenAI model deployments config
 ├── scripts/               # statusline.sh, validate-bash.sh
 ├── skills/                # 7 development workflow skills
 └── settings.json          # Shared permission config

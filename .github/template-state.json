@@ -3,9 +3,6 @@
   "upstream_repo": "serpro69/claude-starter-kit",
   "template_version": "v0.2.0",
   "synced_at": "2025-01-27T10:00:00Z",
-  "sync_exclusions": [
-    ".claude/commands/cove/*",
-    ".claude/skills/cove/*"
-  ],
+  "sync_exclusions": [],
   "variables": { "..." : "..." }
 }
