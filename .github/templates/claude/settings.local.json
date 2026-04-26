@@ -1,22 +1,18 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:raw.githubusercontent.com)",
-      "WebFetch(domain:api.github.com)",
-      "mcp__pal__listmodels",
-      "mcp__pal__chat",
-      "Bash(git add:*)"
-    ],
-    "deny": [
-      "Bash(curl *)",
-      "Read(./.env)",
-      "Read(./.env.*)",
-      "Read(./secrets/**)"
-    ],
-    "ask": [
-      "Bash(git push*)",
-      "Bash(rm*)"
+      "Bash(npm install:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx vite build:*)",
+      "Bash(npx vitest:*)",
+      "Bash(npm run dev:*)",
+      "Bash(git -C /Users/admin/repos/ai-workflows status)",
+      "Bash(git -C /Users/admin/repos/ai-workflows log --oneline -3)",
+      "WebFetch(domain:clinicaltables.nlm.nih.gov)",
+      "Bash(git commit:*)",
+      "Bash(git add:*)",
+      "Bash(az container exec *)",
+      "Bash(az container *)"
     ]
-  },
-  "defaultMode": "bypassPermissions"
+  }
 }
