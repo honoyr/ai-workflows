@@ -1,37 +1,31 @@
 # OpenClaw on Azure Container Instances — Maintainable Runbook
 
-A reproducible, version-controllable approach to running OpenClaw on Azure Container Instances (ACI), tailnet-only, with durable workspace files and shared LanceDB memory.
+A reproducible, version-controllable approach to running OpenClaw on Azure Container Instances (ACI), with public-IP token auth, durable workspace files, and shared LanceDB memory on Azure Blob Storage.
 
 The container is treated as **disposable**. Configuration lives in local files; runtime state lives on durable Azure storage. After every redeploy the container reconstructs itself from these sources.
+
+> **Auth model**: token over public HTTP. Acceptable for personal use over trusted networks. Avoid using on hostile networks (public wifi etc.) since the token rides plaintext. For stricter requirements, see the "Hardening" section.
 
 ---
 
 ## Architecture
 
 ```
-Laptop on tailnet ─┐                                  ┌─ Azure Blob: az://openclaw-memory/lancedb
-                   │                                  │   (memory-lancedb plugin index, shared with laptop)
-                   ▼                                  │
-        Tailscale Serve (HTTPS, auto-TLS)             ▼
-                   │                  ┌── ACI container "openclaw-container-dgonor"
-       https://openclaw-aci           │
-        .<tailnet>.ts.net/            │   ┌─ tailscaled (userspace networking, root)
-                   │                  │   ├─ Tailscale Serve → http://localhost:18789
-                   │                  │   ├─ openclaw gateway (bind=loopback, runs as node user)
-                   │                  │   │   ├─ memory-lancedb → az://openclaw-memory/lancedb
-                   │                  │   │   ├─ Telegram (outbound polling)
-                   │                  │   │   └─ workspace at /mnt/openclaw-workspace
-                   │                  │   └─ Custom entrypoint:
-                   │                  │       1. decodes OPENCLAW_CONFIG_B64 → openclaw.json
-                   │                  │       2. starts tailscaled
-                   │                  │       3. tailscale up (using TS_AUTHKEY)
-                   │                  │       4. tailscale serve --https=443 → openclaw
-                   │                  │       5. drops to node user, execs openclaw
-                   │                  └─ Volume mount /mnt/openclaw-workspace
-                   │                      ↓ Azure Files share "openclaw-workspace"
-                   │                          (SOUL.md, USER.md, AGENTS.md, MEMORY.md, etc.)
-                   │
-                   └── No public IP, no public port. Container is invisible from the internet.
+Browser / Telegram
+    ↓
+http://openclaw.eastus.azurecontainer.io:18789/   (public IP, token auth)
+    ↓
+ACI container "openclaw-container-dgonor"
+  ├─ Custom entrypoint (openclaw-init.sh):
+  │     1. decodes OPENCLAW_CONFIG_B64 → /home/node/.openclaw/openclaw.json
+  │     2. drops to node user, execs openclaw gateway
+  ├─ openclaw gateway (bind=lan, runs as node user)
+  │     ├─ memory-lancedb plugin → az://openclaw-memory/lancedb
+  │     ├─ Telegram plugin (outbound polling)
+  │     └─ workspace at /mnt/openclaw-workspace
+  ├─ Volume mount: Azure Files share "openclaw-workspace"
+  │     → SOUL.md, USER.md, AGENTS.md, MEMORY.md, etc.
+  └─ Models: Kimi-K2.6-1 (default), model-router-1 (speed comparison)
 ```
 
 **Three data layers, all durable across container recreations:**
@@ -44,22 +38,21 @@ Laptop on tailnet ─┐                                  ┌─ Azure Blob: az:
 
 **Three workflows:**
 
-1. **Build image** (`build-image.sh`) — only when the wrapper Dockerfile or entrypoint script changes, or you bump the upstream openclaw image tag.
+1. **Build image** (`build-image.sh`) — when the wrapper Dockerfile or entrypoint script changes, or you bump the upstream openclaw image tag (`BASE_TAG`).
 2. **Deploy** (`deploy.sh`) — recreates the container with current `config.json` baked in. Used for plugin enablement changes, image updates, or secret rotation.
-3. **Hot-reload** (`apply-config.sh`, optional) — for runtime-mutable config like the default model or Telegram allowlist. Won't work for `gateway.*` changes (those require restart).
+3. **Hot-reload** (in-place edit) — for runtime-mutable config like the Telegram allowlist. Won't work for `gateway.*` changes (those require restart).
 
 ---
 
 ## Prerequisites
 
 - **Azure CLI** installed and logged in (`az login`)
-- **Azure Container Registry** with the upstream `openclaw:v2` image available
+- **Azure Container Registry** with the upstream `openclaw:v2` image available (or whatever current upstream tag you want as the base)
 - **Azure OpenAI / Foundry** deployment with both:
-  - A chat model (e.g. `Kimi-K2.6-1`)
+  - One or more chat models (e.g. `Kimi-K2.6-1`, `model-router-1`)
   - A text-embedding model deployment (e.g. `text-embedding-3-small-1`)
 - **Telegram bot token** from [@BotFather](https://t.me/BotFather), and your Telegram user ID from [@userinfobot](https://t.me/userinfobot)
-- **Tailscale account** with **HTTPS feature enabled** (https://login.tailscale.com → Settings → Features → Enable HTTPS)
-- A device on the tailnet (your laptop) for accessing the Control UI
+- **Docker daemon running locally** *only* if you need to push a base image to ACR (most users won't — they pull a tagged image directly into ACR via `az acr import` or have it pushed by upstream)
 
 ---
 
@@ -86,15 +79,23 @@ az storage container create \
   --auth-mode key
 ```
 
-### 3. Generate a Tailscale auth key
+### 3. Push the upstream openclaw image to ACR (if not already there)
 
-Go to https://login.tailscale.com/admin/settings/keys → **Generate auth key** with these settings:
+If you already have the openclaw base image locally tagged for your ACR:
 
-- ✅ **Reusable** — needed because every redeploy creates a new device
-- ✅ **Ephemeral** — **critical** — without this, dead containers leave zombie devices that take over the hostname slot (you'll get `openclaw-aci-1`, `-2`, `-3` etc.). With ephemeral, dead devices auto-cleanup and the next deploy reclaims the clean `openclaw-aci` hostname.
-- Optionally tag it (e.g. `tag:openclaw`)
+```bash
+az acr login --name acrdgonor2
+docker push acrdgonor2.azurecr.io/openclaw:v2
+```
 
-Copy the `tskey-auth-...` value — it's used in `env.sh`.
+If you only have a SHA reference, tag it first:
+
+```bash
+docker tag <sha256:...> acrdgonor2.azurecr.io/openclaw:v2
+docker push acrdgonor2.azurecr.io/openclaw:v2
+```
+
+> **On choosing `BASE_TAG`**: this guide uses `v2` (openclaw 2026.4.15) which is known to work end-to-end with `azure-openai-responses` API, `storageOptions` for memory-lancedb, and the standard plugin layout. When upstream publishes a newer tag (`v3`, etc.), bump `BASE_TAG` in `env.sh` and run `build-image.sh` + `deploy.sh`. Avoid trying to `npm install -g openclaw@latest` on top of an older base image — the npm package puts plugins at a different path and the plugin loader can't find them, which breaks Control UI device pairing among other things.
 
 ---
 
@@ -104,13 +105,13 @@ Everything below lives at `~/openclaw/` on your machine. This directory is the s
 
 ```
 ~/openclaw/
-├── env.sh              # Secrets + Azure/Tailscale variables (NOT committed)
+├── env.sh              # Secrets + Azure variables (NOT committed)
 ├── config.json         # OpenClaw runtime config (safe to commit — no secrets)
 ├── build-image.sh      # Builds the custom wrapper image via az acr build
 ├── deploy.sh           # Recreates the ACI container with current config baked in
 └── docker/
-    ├── Dockerfile      # FROM openclaw:v2 + tailscale + gosu + entrypoint
-    └── openclaw-init.sh # Entrypoint: writes config, starts tailscaled, drops to node, exec openclaw
+    ├── Dockerfile      # FROM openclaw:v2 + gosu + entrypoint script
+    └── openclaw-init.sh # Entrypoint: decodes config, drops to node, exec openclaw
 ```
 
 ### `~/openclaw/env.sh`
@@ -131,18 +132,13 @@ export LOCATION=eastus
 # IMAGE_TAG = which tag deploy.sh uses (set to CUSTOM_TAG once the wrapper is built)
 export ACR_NAME=acrdgonor2
 export BASE_TAG=v2
-export CUSTOM_TAG=custom-v2-4
+export CUSTOM_TAG=custom-v2-5
 export IMAGE_TAG="$CUSTOM_TAG"
 export IMAGE="${ACR_NAME}.azurecr.io/openclaw:${IMAGE_TAG}"
 
 # Workspace storage (Azure Files share for SOUL.md, USER.md, MEMORY.md, etc.)
 export WORKSPACE_SHARE=openclaw-workspace
 export WORKSPACE_MOUNT=/mnt/openclaw-workspace
-
-# Tailscale — see https://login.tailscale.com/admin/settings/keys
-# Recommended: reusable=true, ephemeral=true (avoids zombie devices that block the hostname)
-export TS_AUTHKEY="<paste-tailscale-auth-key>"
-export TS_HOSTNAME="openclaw-aci"
 
 # Container
 export CONTAINER=openclaw-container-dgonor
@@ -152,7 +148,7 @@ export DNS_LABEL=openclaw
 export CPU=2
 export MEMORY=4
 
-# Secrets
+# Secrets — REPLACE WITH YOUR REAL VALUES
 export AZURE_OPENAI_API_KEY="<paste-azure-openai-key>"
 export TELEGRAM_BOT_TOKEN="<paste-telegram-bot-token>"
 export AZURE_STORAGE_ACCOUNT="openclawstoragedgonor"
@@ -171,20 +167,18 @@ az storage account keys list \
 
 ### `~/openclaw/config.json`
 
-Source of truth for non-secret OpenClaw config. Safe to commit.
+Source of truth for non-secret OpenClaw config. Safe to commit. Note `models` lists multiple model deployments — the default is set by `agents.defaults.model` and individual models can be invoked by `openclaw infer model run --model <provider/id>`.
 
 ```bash
 cat > ~/openclaw/config.json << 'EOF'
 {
   "gateway": {
-    "bind": "loopback",
-    "trustedProxies": ["127.0.0.1", "::1"],
+    "bind": "lan",
     "auth": {
-      "mode": "token",
-      "allowTailscale": true
+      "mode": "token"
     },
     "controlUi": {
-      "allowInsecureAuth": false,
+      "allowInsecureAuth": true,
       "allowedOrigins": ["*"]
     }
   },
@@ -206,7 +200,10 @@ cat > ~/openclaw/config.json << 'EOF'
       "microsoft-foundry": {
         "baseUrl": "https://dgonor-llm-api-resource.openai.azure.com/openai/v1",
         "api": "azure-openai-responses",
-        "models": [{"id": "Kimi-K2.6-1", "name": "Kimi K2.6"}]
+        "models": [
+          {"id": "Kimi-K2.6-1", "name": "Kimi K2.6"},
+          {"id": "model-router-1", "name": "Model Router"}
+        ]
       }
     }
   },
@@ -243,14 +240,16 @@ EOF
 
 | Block | Purpose |
 |---|---|
-| `gateway.bind: "loopback"` | OpenClaw never listens on a public interface. All ingress comes through Tailscale Serve via 127.0.0.1. |
-| `gateway.trustedProxies` | Tells openclaw to trust `X-Forwarded-*` headers from Tailscale Serve (loopback). Without this, openclaw refuses to identify the real Tailscale user → falls back to "pairing required". |
-| `gateway.auth.allowTailscale: true` | Accepts Tailscale identity (verified by `tailscaled`) as authentication. |
-| `gateway.controlUi.allowInsecureAuth: false` | No plain-HTTP token auth — we have HTTPS via Tailscale Serve. Passes `openclaw security audit`. |
-| `gateway.controlUi.allowedOrigins: ["*"]` | Wildcard origin is acceptable here because Tailscale identity already gates who can even reach the URL. CORS is defense-in-depth, not the primary control. |
+| `gateway.bind: "lan"` | Listen on all network interfaces (so the ACI public IP is reachable). |
+| `gateway.auth.mode: "token"` | Bearer-token authentication. Token is auto-generated on every fresh boot, fetched via the helper command below. |
+| `gateway.controlUi.allowInsecureAuth: true` | Required for token auth over plain HTTP. Flagged as insecure by `openclaw security audit`; acceptable on trusted networks only. |
+| `gateway.controlUi.allowedOrigins: ["*"]` | Wildcard CORS — fine since auth is the primary control. |
+| `agents.defaults.model` | Default chat model. Set to `Kimi-K2.6-1` here; switch via UI or override per-conversation. |
 | `agents.defaults.workspace: "/mnt/openclaw-workspace"` | Workspace files (SOUL.md, USER.md, etc.) land on the durable Azure Files mount. |
+| `models.providers.microsoft-foundry.models[]` | List of available model deployments. Add more as objects with `{id, name}` to make them switchable. |
 | `plugins.slots.memory: "memory-lancedb"` | Memory slot owner — required to actually activate the lancedb plugin. Enabling the entry alone isn't enough. |
-| `plugins.entries.memory-lancedb.config.dbPath: "az://..."` | LanceDB index lives on Azure Blob Storage, shared with your laptop's local OpenClaw if you point both to the same URI. |
+| `plugins.entries.memory-lancedb.config.dbPath: "az://..."` | LanceDB index lives on Azure Blob Storage. Both your laptop and ACI can point to the same URI to share memory. |
+| `plugins.entries.memory-lancedb.config.storageOptions` | Azure Blob credentials (account + key). Supports `${ENV_VAR}` substitution at OpenClaw startup. |
 | `text-embedding-3-small-1 + dimensions: 1536` | Required because Azure deployment names don't match openclaw's hardcoded model→dim lookup. See gotchas below. |
 
 ### `~/openclaw/docker/Dockerfile`
@@ -263,25 +262,16 @@ FROM ${BASE_IMAGE}
 
 USER root
 
-# Install Tailscale (userspace networking — no TUN device or NET_ADMIN cap needed,
-# which makes it work cleanly inside Azure Container Instances) and gosu so we
-# can drop privileges back to the node user before exec'ing openclaw.
+# Install gosu so the entrypoint can drop privileges back to the node user
+# before exec'ing openclaw.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates gnupg gosu \
- && curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg \
-      | tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null \
- && curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list \
-      | tee /etc/apt/sources.list.d/tailscale.list \
- && apt-get update \
- && apt-get install -y --no-install-recommends tailscale \
+ && apt-get install -y --no-install-recommends gosu \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
 COPY openclaw-init.sh /usr/local/bin/openclaw-init.sh
 RUN chmod +x /usr/local/bin/openclaw-init.sh
 
-# Stay as root for the entrypoint — it starts tailscaled (root-only) and then
-# drops to the node user via gosu before exec'ing openclaw.
 ENTRYPOINT ["/usr/local/bin/openclaw-init.sh"]
 
 # Re-declare CMD: setting ENTRYPOINT in a child image RESETS the parent's CMD
@@ -310,50 +300,12 @@ else
 fi
 chown -R node:node /home/node/.openclaw
 
-# 2. Note workspace mount
+# 2. Note workspace mount (Azure Files mounted at /mnt/openclaw-workspace)
 if [ -d /mnt/openclaw-workspace ]; then
   log "workspace mount detected at /mnt/openclaw-workspace (azure files)"
 fi
 
-# 3. Start Tailscale (userspace networking, runs as root)
-if [ -n "$TS_AUTHKEY" ]; then
-  log "starting tailscaled in userspace networking mode"
-  mkdir -p /var/run/tailscale /var/lib/tailscale
-
-  # Redirect tailscaled output to a separate file to keep main stdout clean
-  tailscaled \
-    --tun=userspace-networking \
-    --state=/var/lib/tailscale/tailscaled.state \
-    --socket=/var/run/tailscale/tailscaled.sock \
-    --port=41641 \
-    >/var/log/tailscaled.log 2>&1 &
-
-  for i in 1 2 3 4 5 6 7 8 9 10; do
-    [ -S /var/run/tailscale/tailscaled.sock ] && break
-    sleep 1
-  done
-
-  HOSTNAME="${TS_HOSTNAME:-openclaw-aci}"
-  log "tailscale up (hostname=$HOSTNAME)"
-  tailscale up \
-    --authkey="$TS_AUTHKEY" \
-    --hostname="$HOSTNAME" \
-    --accept-routes=false \
-    --accept-dns=false 2>&1 | sed 's/^/[tailscale-up] /'
-
-  if [ "${TS_SERVE_ENABLED:-true}" = "true" ]; then
-    log "configuring tailscale serve --bg --https=443 -> http://localhost:18789"
-    tailscale serve --bg --https=443 http://localhost:18789 2>&1 | sed 's/^/[tailscale-serve] /' || \
-      log "tailscale serve setup failed (HTTPS may need to be enabled in admin console)"
-  fi
-
-  log "tailscale ip:"
-  tailscale ip -4 2>&1 | sed 's/^/[tailscale-ip] /' || true
-else
-  log "TS_AUTHKEY not set; Tailscale disabled"
-fi
-
-# 4. Run openclaw via the original entrypoint, dropping privileges to node.
+# 3. Run openclaw via the original entrypoint, dropping privileges to node.
 log "launching openclaw as node user: docker-entrypoint.sh $*"
 gosu node docker-entrypoint.sh "$@"
 RC=$?
@@ -373,7 +325,7 @@ source "$(dirname "$0")/env.sh"
 
 : "${ACR_NAME:?ACR_NAME not set}"
 : "${BASE_TAG:?BASE_TAG not set in env.sh (e.g. v2)}"
-: "${CUSTOM_TAG:?CUSTOM_TAG not set in env.sh (e.g. custom-v2-4)}"
+: "${CUSTOM_TAG:?CUSTOM_TAG not set in env.sh (e.g. custom-v2-5)}"
 
 DOCKER_DIR="$(dirname "$0")/docker"
 
@@ -387,7 +339,7 @@ az acr build \
   "$DOCKER_DIR"
 
 echo
-echo "==> Built. Update env.sh: IMAGE_TAG=$CUSTOM_TAG, then run deploy.sh"
+echo "==> Built. Run: ~/openclaw/deploy.sh"
 SCRIPT
 
 chmod +x ~/openclaw/build-image.sh
@@ -405,11 +357,8 @@ source "$(dirname "$0")/env.sh"
 [ -n "${TELEGRAM_BOT_TOKEN:-}" ] || { echo "TELEGRAM_BOT_TOKEN not set"; exit 1; }
 [ -n "${AZURE_STORAGE_ACCOUNT:-}" ] || { echo "AZURE_STORAGE_ACCOUNT not set"; exit 1; }
 [ -n "${AZURE_STORAGE_KEY:-}" ] || { echo "AZURE_STORAGE_KEY not set"; exit 1; }
-[ -n "${TS_AUTHKEY:-}" ] || { echo "TS_AUTHKEY not set (generate at https://login.tailscale.com/admin/settings/keys)"; exit 1; }
-[ "$TS_AUTHKEY" != "<paste-tailscale-auth-key>" ] || { echo "TS_AUTHKEY is still the placeholder — paste a real key into env.sh"; exit 1; }
 : "${WORKSPACE_SHARE:?WORKSPACE_SHARE not set in env.sh}"
 : "${WORKSPACE_MOUNT:?WORKSPACE_MOUNT not set in env.sh}"
-: "${TS_HOSTNAME:?TS_HOSTNAME not set in env.sh}"
 
 CONFIG_FILE="$(dirname "$0")/config.json"
 [ -f "$CONFIG_FILE" ] || { echo "Missing $CONFIG_FILE"; exit 1; }
@@ -442,6 +391,9 @@ az container create \
   --os-type Linux \
   --cpu "$CPU" \
   --memory "$MEMORY" \
+  --ip-address Public \
+  --ports 18789 \
+  --dns-name-label "$DNS_LABEL" \
   --azure-file-volume-account-name "$AZURE_STORAGE_ACCOUNT" \
   --azure-file-volume-account-key "$AZURE_STORAGE_KEY" \
   --azure-file-volume-share-name "$WORKSPACE_SHARE" \
@@ -452,8 +404,6 @@ az container create \
     AZURE_STORAGE_ACCOUNT="$AZURE_STORAGE_ACCOUNT" \
     AZURE_STORAGE_KEY="$AZURE_STORAGE_KEY" \
     OPENCLAW_CONFIG_B64="$CONFIG_B64" \
-    TS_AUTHKEY="$TS_AUTHKEY" \
-    TS_HOSTNAME="$TS_HOSTNAME" \
   >/dev/null
 
 echo "==> Waiting for container to reach Running state"
@@ -470,10 +420,14 @@ until az container logs --resource-group "$RG" --subscription "$SUBSCRIPTION" --
 done
 echo
 
-echo "==> Done — container is on the tailnet only (no public IP)"
+echo "==> Done"
+az container show --resource-group "$RG" --subscription "$SUBSCRIPTION" --name "$CONTAINER" --query "{ip:ipAddress.ip, fqdn:ipAddress.fqdn}" -o table
 echo
-echo "Access the UI from any device on the tailnet:"
-echo "  https://${TS_HOSTNAME}.<your-tailnet>.ts.net/"
+echo "Access the UI:"
+echo "  http://openclaw.${LOCATION}.azurecontainer.io:18789/"
+echo "Fetch the gateway token:"
+echo "  az container exec --resource-group $RG --subscription $SUBSCRIPTION --name $CONTAINER \\"
+echo "    --exec-command \"gosu node node -e console.log(JSON.parse(require(String.fromCharCode(102,115)).readFileSync('/home/node/.openclaw/openclaw.json')).gateway.auth.token)\""
 SCRIPT
 
 chmod +x ~/openclaw/deploy.sh
@@ -484,15 +438,15 @@ chmod +x ~/openclaw/deploy.sh
 ## First-time deploy
 
 ```bash
-~/openclaw/build-image.sh    # ~1.5 min — builds custom image via ACR Tasks (no local Docker daemon needed)
+~/openclaw/build-image.sh    # ~1-2 min — builds custom image via ACR Tasks (no local Docker daemon needed)
 ~/openclaw/deploy.sh         # ~2-3 min — recreates container with all config baked in
 ```
 
-The deploy waits for the gateway to log `ready (7 plugins: ...)` before exiting.
+The deploy waits for the gateway to log `ready (7 plugins: ...)` before exiting. The output ends with the public IP and FQDN.
 
 ---
 
-## First-time device pairing
+## First-time device pairing (Control UI)
 
 OpenClaw's Control UI requires explicit device approval on first connection from a new browser. After your first visit and Connect attempt, approve from the CLI:
 
@@ -545,7 +499,7 @@ az container show --resource-group "$RG" --subscription "$SUBSCRIPTION" --name "
 az container logs --resource-group "$RG" --subscription "$SUBSCRIPTION" --name "$CONTAINER" 2>&1 | grep "gateway.*ready"
 # Expected: "ready (7 plugins: acpx, browser, device-pair, memory-lancedb, phone-control, talk-voice, telegram; ...)"
 
-# 3. Memory backend confirmed
+# 3. Memory backend confirmed (lancedb on Azure Blob)
 az container exec --resource-group "$RG" --subscription "$SUBSCRIPTION" --name "$CONTAINER" \
   --exec-command "gosu node openclaw ltm stats"
 # Expected: "Total memories: N" (note: command is `ltm`, not `memory`, when lancedb owns the slot)
@@ -555,43 +509,51 @@ az container exec --resource-group "$RG" --subscription "$SUBSCRIPTION" --name "
   --exec-command "ls /mnt/openclaw-workspace"
 # Expected: AGENTS.md, BOOTSTRAP.md, HEARTBEAT.md, IDENTITY.md, SOUL.md, TOOLS.md (all on the share)
 
-# 5. Tailscale device alive on tailnet
+# 5. Probe both models
 az container exec --resource-group "$RG" --subscription "$SUBSCRIPTION" --name "$CONTAINER" \
-  --exec-command "tailscale status --self=true --peers=false"
-# Expected: <ip>  openclaw-aci  <user>  linux  -
+  --exec-command "gosu node openclaw infer model run --model microsoft-foundry/Kimi-K2.6-1 --prompt hi"
+az container exec --resource-group "$RG" --subscription "$SUBSCRIPTION" --name "$CONTAINER" \
+  --exec-command "gosu node openclaw infer model run --model microsoft-foundry/model-router-1 --prompt hi"
+# Expected: a real reply from each model
 
-# 6. UI reachable (open in browser from any tailnet device)
-#    https://openclaw-aci.<your-tailnet>.ts.net/
+# 6. UI reachable
+#    http://openclaw.eastus.azurecontainer.io:18789/  (paste token, complete pairing)
 ```
+
+> **Speed comparison via `az container exec` is misleading** — the exec adds ~30s of websocket overhead. For accurate latency comparison between models, test through the Control UI or Telegram, where you measure actual model time.
 
 ---
 
 ## Daily operations
 
-### Update config (most changes — runtime-mutable)
+### Update config
 
 For changes to model selection, Telegram allowlist, etc.:
 
 1. Edit `~/openclaw/config.json`
 2. Run `~/openclaw/deploy.sh`
 
-OpenClaw also supports hot-reload of *some* keys without full container recreation, but `gateway.*` settings (bind, trustedProxies, allowedOrigins) and plugin enablement always require a process restart, which means a redeploy. Keep it simple: redeploy.
+OpenClaw also supports hot-reload of *some* keys without full container recreation, but `gateway.*` settings (bind, allowedOrigins, etc.) and plugin enablement always require a process restart, which means a redeploy. Keep it simple: redeploy.
 
 ### Update upstream OpenClaw image
 
+When upstream publishes a newer tag (e.g. `v3`):
+
 ```bash
-# 1. Bump BASE_TAG in env.sh (e.g. v2 → v3)
+# 1. Push the new upstream tag to ACR (or use az acr import)
+docker tag <new-image> acrdgonor2.azurecr.io/openclaw:v3
+docker push acrdgonor2.azurecr.io/openclaw:v3
+
+# 2. Bump tags in env.sh
 sed -i '' 's/BASE_TAG=v2/BASE_TAG=v3/' ~/openclaw/env.sh
+sed -i '' 's/CUSTOM_TAG=custom-v2-5/CUSTOM_TAG=custom-v3-1/' ~/openclaw/env.sh
 
-# 2. Bump CUSTOM_TAG too (so we don't conflict with old custom images)
-sed -i '' 's/CUSTOM_TAG=custom-v2-4/CUSTOM_TAG=custom-v3-1/' ~/openclaw/env.sh
-
-# 3. Rebuild the wrapper image
+# 3. Rebuild + redeploy
 ~/openclaw/build-image.sh
-
-# 4. Redeploy
 ~/openclaw/deploy.sh
 ```
+
+> **Don't try to `npm install -g openclaw@latest` on top of an older base image.** The npm package puts plugins at a different path (`/usr/local/lib/node_modules/openclaw/`) than the base image's plugin loader expects (`/app/extensions/`). Result: only `memory-lancedb` and `telegram` load — `device-pair` is missing, so the Control UI can't pair browsers and the WebSocket closes with `pairing required` regardless of approval. Bump the base image tag instead.
 
 ### Rotate a secret
 
@@ -625,8 +587,19 @@ az container exec --resource-group "$RG" --subscription "$SUBSCRIPTION" --name "
 ```bash
 source ~/openclaw/env.sh
 az container delete --resource-group "$RG" --subscription "$SUBSCRIPTION" --name "$CONTAINER" --yes
-# Tailscale device auto-cleans up because the auth key is ephemeral
 ```
+
+---
+
+## Hardening (if you need stricter security)
+
+Token-over-HTTP is fine for personal use over trusted networks, but the token is recoverable by anyone able to MITM the connection. If you need stronger security (public wifi, multi-tenant ACI, internet-facing demo, etc.), choose one:
+
+1. **Tailscale**. Add `tailscaled` + `tailscale serve --https=443` to the entrypoint. Drop `--ip-address Public` from `deploy.sh`. UI becomes `https://openclaw-aci.<tailnet>.ts.net/` over auto-issued TLS, gated by Tailscale identity. Documented in earlier git history — search this file's git log for `tailnet`.
+2. **Reverse proxy with TLS** (Cloudflare Tunnel, Caddy + auth). Bind openclaw to loopback, terminate TLS at the proxy.
+3. **Trusted-proxy auth + reverse proxy with SSO** (e.g. Cloudflare Access). Set `gateway.auth.mode: "trusted-proxy"`, `gateway.trustedProxies: [...]` and let the proxy do identity verification.
+
+The OpenClaw docs explicitly recommend (1) for any internet-facing deployment.
 
 ---
 
@@ -646,14 +619,6 @@ A fresh share overlays the directory and hides workspace files OpenClaw needs (`
 
 ACI splits `--exec-command` on whitespace and passes quotes literally. To avoid this in shell-injection-style commands, base64-encode payloads and use `Buffer.from(b64,'base64')` inside `node -e`. To avoid quote literals when reading files via node, use `String.fromCharCode(102,115)` for `'fs'`.
 
-```bash
-# WRONG — sed receives literal "'s/x/y/'" and errors
---exec-command "sed -i 's/x/y/' /file"
-
-# RIGHT — no inner quotes
---exec-command "sed -i s/x/y/ /file"
-```
-
 ### Setting `ENTRYPOINT` in a child Dockerfile **resets** the parent's `CMD`
 
 If you `FROM openclaw:v2` and add `ENTRYPOINT [...]`, Docker discards the parent image's `CMD`. Result: your entrypoint receives no args, `docker-entrypoint.sh` exits with rc=0, and the container loops with no openclaw process — **all without any error log**.
@@ -664,16 +629,21 @@ ENTRYPOINT ["/usr/local/bin/openclaw-init.sh"]
 CMD ["node", "openclaw.mjs", "gateway", "--allow-unconfigured"]
 ```
 
-### Tailscale auth key MUST be ephemeral
+### Don't `npm install -g openclaw@latest` to update inside the image
 
-Without `Ephemeral: Yes` on the auth key, dead containers leave zombie devices in your tailnet that hold the hostname slot. Each redeploy claims `openclaw-aci-1`, `-2`, `-3`, etc. The URL keeps changing and `allowedOrigins` becomes a moving target. With ephemeral keys, dead devices auto-cleanup within minutes and the next deploy reclaims the clean `openclaw-aci` hostname.
+Multiple subtle failures:
+1. The base image's `/usr/local/bin/openclaw` is a **symlink** to `/app/openclaw.mjs` — npm refuses to overwrite (EEXIST). `--force` works around this.
+2. Even with `--force`, npm puts the new openclaw at `/usr/local/lib/node_modules/openclaw/` while the base image's plugin loader looks at `/app/extensions/`. Plugins like `device-pair` aren't found, so the Control UI fails to pair browsers.
+3. Newer openclaw versions may change the config schema (e.g. `storageOptions` removed, new `api` enum values added) which breaks your `config.json` against the old base.
+
+Bump `BASE_TAG` to a newer upstream tag instead.
 
 ### Schema mistakes that get rejected
 
 | Wrong | Right |
 |---|---|
 | `models.default = "..."` | `agents.defaults.model = "..."` |
-| `gateway.bind = "0.0.0.0:18789"` | `gateway.bind = "loopback"` (string mode names only) |
+| `gateway.bind = "0.0.0.0:18789"` | `gateway.bind = "lan"` (string mode names only) |
 | `models.providers.<p>.endpoint` | `models.providers.<p>.baseUrl` |
 | `baseUrl: "https://<r>.services.ai.azure.com/api/projects/..."` | `baseUrl: "https://<r>.openai.azure.com/openai/v1"` |
 | `api: "chat-completions"` | `api: "azure-openai-responses"` |
@@ -684,32 +654,9 @@ Without `Ephemeral: Yes` on the auth key, dead containers leave zombie devices i
 | `dbPath: "az://openclaw-memory"` | `dbPath: "az://openclaw-memory/lancedb"` (need a sub-path) |
 | `openclaw memory status` after lancedb is active | `openclaw ltm stats` (lancedb replaces the `memory` CLI) |
 
-### "pairing required" error in Control UI
-
-If the WebSocket connection closes immediately with `code=1008 reason=pairing required`, two distinct causes:
-
-1. **Missing `gateway.trustedProxies`**: openclaw can't see the real Tailscale user behind Tailscale Serve, so it falls back to "must pair this device". Fix: `"trustedProxies": ["127.0.0.1", "::1"]` in `gateway`.
-
-2. **Genuinely new browser**: even with everything else right, the first connection from a new browser/device needs explicit approval. Fix: `openclaw devices list` then `openclaw devices approve <requestId>`. See "First-time device pairing" above.
-
 ### Cross-region ACR/ACI
 
 If ACR and ACI are in different regions, image pulls cross regions — adds 20–60s to first boot. Match regions for cleaner ops.
-
----
-
-## Why this architecture
-
-| Concern | Solution |
-|---|---|
-| ACI auto-restarts wipe writable filesystem | Config baked into env var, decoded at boot by entrypoint |
-| Plugin enablement requires process restart | Boot-time config injection — plugins are present on first start, no second restart needed |
-| Public IP exposes openclaw to the internet | No public IP at all. Tailscale handles ingress. |
-| Token over plain HTTP can be intercepted | Tailscale Serve provides automatic HTTPS via auto-issued TLS |
-| Workspace markdown files lost on container recreation | Azure Files volume mount at `/mnt/openclaw-workspace` |
-| Memory lost on container recreation | `memory-lancedb` plugin with `dbPath: "az://..."` on Azure Blob |
-| Tailscale devices accumulate zombies | Ephemeral auth key — Tailscale auto-cleans dead devices |
-| `az container restart` re-creates writable layer | Document that it's destructive; use `deploy.sh` instead |
 
 ---
 
@@ -730,9 +677,10 @@ If ACR and ACI are in different regions, image pulls cross regions — adds 20�
 | Memory blob storage | `az://openclaw-memory/lancedb` in `openclawstoragedgonor` |
 | Workspace mount path inside container | `/mnt/openclaw-workspace` |
 | Config path inside container | `/home/node/.openclaw/openclaw.json` |
-| Tailnet hostname | `openclaw-aci.<your-tailnet>.ts.net` |
-| Required env vars | `AZURE_OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `AZURE_STORAGE_ACCOUNT`, `AZURE_STORAGE_KEY`, `TS_AUTHKEY`, `TS_HOSTNAME` |
+| Public URL | `http://openclaw.<region>.azurecontainer.io:18789/` |
+| Required env vars | `AZURE_OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `AZURE_STORAGE_ACCOUNT`, `AZURE_STORAGE_KEY` |
 | Default chat model | `microsoft-foundry/Kimi-K2.6-1` |
+| Available models | `Kimi-K2.6-1`, `model-router-1` |
 | Embedding model | `text-embedding-3-small-1` (deployment name) → 1536 dims |
 | Memory CLI subcommand | `openclaw ltm` (when lancedb owns the slot) |
 | OpenClaw docs | https://docs.openclaw.ai |
