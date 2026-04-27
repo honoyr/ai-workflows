@@ -12,7 +12,8 @@
       "Bash(git commit:*)",
       "Bash(git add:*)",
       "Bash(az container exec *)",
-      "Bash(az container *)"
+      "Bash(az container *)",
+      "WebFetch(domain:docs.openclaw.ai)"
     ]
   }
 }
