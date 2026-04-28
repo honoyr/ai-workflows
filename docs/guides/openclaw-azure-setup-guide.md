@@ -24,17 +24,19 @@ ACI container "openclaw-container-dgonor"
   │     ├─ Telegram plugin (outbound polling)
   │     └─ workspace at /mnt/openclaw-workspace
   ├─ Volume mount: Azure Files share "openclaw-workspace"
-  │     → SOUL.md, USER.md, AGENTS.md, MEMORY.md, etc.
+  │     ├─ SOUL.md, USER.md, AGENTS.md, MEMORY.md, etc.
+  │     └─ _state/{agents,identity,tasks,canvas,telegram}  ← symlinked from ~/.openclaw/
   └─ Models: Kimi-K2.6-1 (default), model-router-1 (speed comparison)
 ```
 
-**Three data layers, all durable across container recreations:**
+**Four data layers, all durable across container recreations:**
 
 | Layer | Where | Survives `az container delete`? |
 |---|---|---|
 | Config (`openclaw.json`) | Baked into `OPENCLAW_CONFIG_B64` env var, written at boot by entrypoint | ✓ — comes from local `config.json` |
 | Workspace files (`SOUL.md`, `USER.md`, etc.) | Azure Files share `openclaw-workspace` mounted at `/mnt/openclaw-workspace` | ✓ |
 | Memory index (vectors) | Azure Blob `az://openclaw-memory/lancedb` via `memory-lancedb` plugin | ✓ |
+| Session/runtime state (`agents/`, `identity/`, `tasks/`, `canvas/`, `telegram/`) | Azure Files share `openclaw-workspace/_state/` via symlinks set up at boot by entrypoint | ✓ — entrypoint symlinks `/home/node/.openclaw/<subdir>` → mount |
 
 **Three workflows:**
 
@@ -132,7 +134,7 @@ export LOCATION=eastus
 # IMAGE_TAG = which tag deploy.sh uses (set to CUSTOM_TAG once the wrapper is built)
 export ACR_NAME=acrdgonor2
 export BASE_TAG=v2
-export CUSTOM_TAG=custom-v2-5
+export CUSTOM_TAG=custom-v2-6
 export IMAGE_TAG="$CUSTOM_TAG"
 export IMAGE="${ACR_NAME}.azurecr.io/openclaw:${IMAGE_TAG}"
 
@@ -298,12 +300,35 @@ if [ -n "$OPENCLAW_CONFIG_B64" ]; then
 else
   log "OPENCLAW_CONFIG_B64 not set; OpenClaw will use auto-generated default config"
 fi
-chown -R node:node /home/node/.openclaw
 
-# 2. Note workspace mount (Azure Files mounted at /mnt/openclaw-workspace)
+# 2. Persist mutable state subdirs to the Azure Files mount via symlinks.
+# These directories hold runtime data that we don't want to lose on container
+# recreation: chat sessions, device identity (browser pairing), task state,
+# canvas state, telegram channel state. Without these symlinks, every redeploy
+# loses sessions and re-pairs every browser.
+#
+# Strategy: create _state/<subdir> on the durable mount, then symlink
+# /home/node/.openclaw/<subdir> -> the mount. OpenClaw will discover existing
+# data on first directory read, and any new writes flow to the mount.
 if [ -d /mnt/openclaw-workspace ]; then
-  log "workspace mount detected at /mnt/openclaw-workspace (azure files)"
+  STATE_DIR=/mnt/openclaw-workspace/_state
+  mkdir -p "$STATE_DIR"
+  for subdir in agents identity tasks canvas telegram; do
+    SRC="$STATE_DIR/$subdir"
+    DST="/home/node/.openclaw/$subdir"
+    mkdir -p "$SRC"
+    # Remove anything pre-existing at the symlink site (fresh container = nothing,
+    # but in case of weirdness, clear it). Don't follow symlinks on rm.
+    [ -e "$DST" ] || [ -L "$DST" ] && rm -rf "$DST"
+    ln -s "$SRC" "$DST"
+  done
+  log "state subdirs symlinked → /mnt/openclaw-workspace/_state/{agents,identity,tasks,canvas,telegram}"
+else
+  log "WARNING: /mnt/openclaw-workspace not mounted — sessions will NOT persist across container recreation"
 fi
+
+chown -R node:node /home/node/.openclaw
+log "workspace mount detected at /mnt/openclaw-workspace (azure files)"
 
 # 3. Run openclaw via the original entrypoint, dropping privileges to node.
 log "launching openclaw as node user: docker-entrypoint.sh $*"
@@ -466,6 +491,70 @@ az container exec --resource-group "$RG" --subscription "$SUBSCRIPTION" --name "
 After approval, the same browser will reconnect without prompting. Each new browser/device requires a new approval. To revoke a paired device, use `openclaw devices remove`.
 
 > **Why `gosu node`?** OpenClaw stores its config and device records in `/home/node/.openclaw/`. ACI exec sessions run as root, so we use `gosu node` to switch to the user that owns the data.
+
+---
+
+## Session and state persistence
+
+ACI's writable filesystem is wiped on every container recreation (`az container delete` + recreate). The entrypoint solves this by symlinking OpenClaw's five mutable state directories to the durable Azure Files mount at boot, before openclaw starts.
+
+**What gets persisted:**
+
+| Directory | Contents |
+|---|---|
+| `agents/` | Chat sessions, conversation history, agent task logs |
+| `identity/` | Browser device pairing records — paired browsers stay paired across redeploys |
+| `tasks/` | Scheduled / background task state |
+| `canvas/` | Canvas (whiteboard) state |
+| `telegram/` | Telegram channel state and pending messages |
+
+**On-disk layout (Azure Files share):**
+
+```
+openclaw-workspace/          ← root of the Azure Files share
+├── SOUL.md                  ← workspace identity files (already durable)
+├── USER.md
+├── ...
+└── _state/                  ← created by entrypoint on first boot
+    ├── agents/
+    ├── identity/
+    ├── tasks/
+    ├── canvas/
+    └── telegram/
+```
+
+**How the symlinks work:**
+
+At container start, `openclaw-init.sh` runs (as root) before openclaw:
+1. Creates `_state/<subdir>` on the mount for any subdir that doesn't exist yet.
+2. Removes any pre-existing path at `/home/node/.openclaw/<subdir>` (always empty on a fresh container).
+3. Creates `ln -s /mnt/openclaw-workspace/_state/<subdir> /home/node/.openclaw/<subdir>`.
+4. Runs `chown -R node:node /home/node/.openclaw` so openclaw (running as `node`) owns the symlinks.
+
+OpenClaw sees normal directories and reads/writes flow transparently to Azure Files.
+
+**Verifying symlinks after deploy:**
+
+```bash
+source ~/openclaw/env.sh
+az container exec --resource-group "$RG" --subscription "$SUBSCRIPTION" --name "$CONTAINER" \
+  --exec-command "ls -la /home/node/.openclaw"
+# Expected: agents → /mnt/openclaw-workspace/_state/agents, etc.
+```
+
+**Migrating existing sessions before a redeploy (optional):**
+
+If you have valuable sessions in a running container and want to carry them over, copy them to the mount before redeploying:
+
+```bash
+source ~/openclaw/env.sh
+for subdir in agents identity tasks canvas telegram; do
+  az container exec --resource-group "$RG" --subscription "$SUBSCRIPTION" --name "$CONTAINER" \
+    --exec-command "cp -rn /home/node/.openclaw/${subdir}/. /mnt/openclaw-workspace/_state/${subdir}/"
+done
+```
+
+Then redeploy. The entrypoint will find existing data in `_state/` and the symlinks will point right to it.
 
 ---
 
