@@ -1,6 +1,6 @@
 # OpenClaw on Azure Container Instances — Maintainable Runbook
 
-A reproducible, version-controllable approach to running OpenClaw on Azure Container Instances (ACI), with public-IP token auth, durable workspace files, and shared LanceDB memory on Azure Blob Storage.
+A reproducible, version-controllable approach to running OpenClaw on Azure Container Instances (ACI), with HTTPS via Cloudflare Tunnel, token auth, Brave web search, durable workspace files, and shared LanceDB memory on Azure Blob Storage.
 
 The container is treated as **disposable**. Configuration lives in local files; runtime state lives on durable Azure storage. After every redeploy the container reconstructs itself from these sources.
 
@@ -13,13 +13,20 @@ The container is treated as **disposable**. Configuration lives in local files; 
 ```
 Browser / Telegram
     ↓
-http://openclaw.eastus.azurecontainer.io:18789/   (public IP, token auth)
+https://openclaw.posthub.cc/          (HTTPS via Cloudflare Tunnel — use for Control UI)
+    or
+http://openclaw.eastus.azurecontainer.io:18789/   (direct HTTP — use for CLI/token fetch)
     ↓
 ACI container "openclaw-container-dgonor"
   ├─ Custom entrypoint (openclaw-init.sh):
   │     1. decodes OPENCLAW_CONFIG_B64 → /home/node/.openclaw/openclaw.json
-  │     2. drops to node user, execs openclaw gateway
+  │     2. symlinks ~/.openclaw/{agents,identity,tasks,canvas,telegram} → Azure Files _state/
+  │     3. starts cloudflared tunnel in background (HTTPS)
+  │     4. drops to node user, execs openclaw gateway
+  ├─ cloudflared (background, pid 1-ish)
+  │     → Cloudflare edge (4 redundant QUIC connections) → https://openclaw.posthub.cc/
   ├─ openclaw gateway (bind=lan, runs as node user)
+  │     ├─ brave plugin → Brave Search API (web search for agents)
   │     ├─ memory-lancedb plugin → az://openclaw-memory/lancedb
   │     ├─ Telegram plugin (outbound polling)
   │     └─ workspace at /mnt/openclaw-workspace
@@ -38,10 +45,12 @@ ACI container "openclaw-container-dgonor"
 | Memory index (vectors) | Azure Blob `az://openclaw-memory/lancedb` via `memory-lancedb` plugin | ✓ |
 | Session/runtime state (`agents/`, `identity/`, `tasks/`, `canvas/`, `telegram/`) | Azure Files share `openclaw-workspace/_state/` via symlinks set up at boot by entrypoint | ✓ — entrypoint symlinks `/home/node/.openclaw/<subdir>` → mount |
 
+**Note on the gateway token**: the token is stored in the writable container filesystem and regenerates on every redeploy. It does **not** survive `az container delete`. Re-fetch it with the command in the "Getting the gateway token" section after each deploy. Device pairing records survive because they live in `identity/` which is symlinked to Azure Files.
+
 **Three workflows:**
 
 1. **Build image** (`build-image.sh`) — when the wrapper Dockerfile or entrypoint script changes, or you bump the upstream openclaw image tag (`BASE_TAG`).
-2. **Deploy** (`deploy.sh`) — recreates the container with current `config.json` baked in. Used for plugin enablement changes, image updates, or secret rotation.
+2. **Deploy** (`deploy.sh`) — recreates the container with current `config.json` baked in. Used for plugin enablement changes, image updates, or secret rotation. Re-fetch the gateway token after each deploy.
 3. **Hot-reload** (in-place edit) — for runtime-mutable config like the Telegram allowlist. Won't work for `gateway.*` changes (those require restart).
 
 ---
@@ -49,7 +58,7 @@ ACI container "openclaw-container-dgonor"
 ## Prerequisites
 
 - **Azure CLI** installed and logged in (`az login`)
-- **Azure Container Registry** with the upstream `openclaw:v2` image available (or whatever current upstream tag you want as the base)
+- **Azure Container Registry** with the upstream `openclaw:v3` image available (or whatever current upstream tag you want as the base)
 - **Azure OpenAI / Foundry** deployment with both:
   - One or more chat models (e.g. `Kimi-K2.6-1`, `model-router-1`)
   - A text-embedding model deployment (e.g. `text-embedding-3-small-1`)
@@ -83,21 +92,30 @@ az storage container create \
 
 ### 3. Push the upstream openclaw image to ACR (if not already there)
 
+The fastest path is `az acr import`, which streams the image registry-to-registry without needing a local Docker daemon:
+
+```bash
+az acr import \
+  --name acrdgonor2 \
+  --source ghcr.io/openclaw/openclaw:2026.4.26-slim \
+  --image openclaw:v3
+```
+
 If you already have the openclaw base image locally tagged for your ACR:
 
 ```bash
 az acr login --name acrdgonor2
-docker push acrdgonor2.azurecr.io/openclaw:v2
+docker push acrdgonor2.azurecr.io/openclaw:v3
 ```
 
 If you only have a SHA reference, tag it first:
 
 ```bash
-docker tag <sha256:...> acrdgonor2.azurecr.io/openclaw:v2
-docker push acrdgonor2.azurecr.io/openclaw:v2
+docker tag <sha256:...> acrdgonor2.azurecr.io/openclaw:v3
+docker push acrdgonor2.azurecr.io/openclaw:v3
 ```
 
-> **On choosing `BASE_TAG`**: this guide uses `v2` (openclaw 2026.4.15) which is known to work end-to-end with `azure-openai-responses` API, `storageOptions` for memory-lancedb, and the standard plugin layout. When upstream publishes a newer tag (`v3`, etc.), bump `BASE_TAG` in `env.sh` and run `build-image.sh` + `deploy.sh`. Avoid trying to `npm install -g openclaw@latest` on top of an older base image — the npm package puts plugins at a different path and the plugin loader can't find them, which breaks Control UI device pairing among other things.
+> **On choosing `BASE_TAG`**: this guide uses `v3` (openclaw 2026.4.26, `bookworm-slim` runtime) which is known to work end-to-end with `azure-openai-responses` API, `storageOptions` for memory-lancedb, and the standard plugin layout. When upstream publishes a newer tag (`v4`, etc.), bump `BASE_TAG` in `env.sh` and run `build-image.sh` + `deploy.sh`. Avoid trying to `npm install -g openclaw@latest` on top of an older base image — the npm package puts plugins at a different path and the plugin loader can't find them, which breaks Control UI device pairing among other things.
 
 ---
 
@@ -112,7 +130,7 @@ Everything below lives at `~/openclaw/` on your machine. This directory is the s
 ├── build-image.sh      # Builds the custom wrapper image via az acr build
 ├── deploy.sh           # Recreates the ACI container with current config baked in
 └── docker/
-    ├── Dockerfile      # FROM openclaw:v2 + gosu + entrypoint script
+    ├── Dockerfile      # FROM openclaw:v3 + gosu + entrypoint script
     └── openclaw-init.sh # Entrypoint: decodes config, drops to node, exec openclaw
 ```
 
@@ -133,8 +151,8 @@ export LOCATION=eastus
 # CUSTOM_TAG = our wrapper image tag (built by build-image.sh, deployed by deploy.sh)
 # IMAGE_TAG = which tag deploy.sh uses (set to CUSTOM_TAG once the wrapper is built)
 export ACR_NAME=acrdgonor2
-export BASE_TAG=v2
-export CUSTOM_TAG=custom-v2-6
+export BASE_TAG=v3
+export CUSTOM_TAG=custom-v3-1
 export IMAGE_TAG="$CUSTOM_TAG"
 export IMAGE="${ACR_NAME}.azurecr.io/openclaw:${IMAGE_TAG}"
 
@@ -155,6 +173,8 @@ export AZURE_OPENAI_API_KEY="<paste-azure-openai-key>"
 export TELEGRAM_BOT_TOKEN="<paste-telegram-bot-token>"
 export AZURE_STORAGE_ACCOUNT="openclawstoragedgonor"
 export AZURE_STORAGE_KEY="<paste-storage-account-key>"
+export BRAVE_SEARCH_API="<paste-brave-search-api-key>"    # from api.search.brave.com
+export CF_TUNNEL_TOKEN="<paste-cloudflare-tunnel-token>"  # from one.dash.cloudflare.com → Networks → Tunnels
 EOF
 
 chmod 600 ~/openclaw/env.sh
@@ -179,6 +199,7 @@ cat > ~/openclaw/config.json << 'EOF'
     "auth": {
       "mode": "token"
     },
+    "trustedProxies": ["127.0.0.1", "::1"],
     "controlUi": {
       "allowInsecureAuth": true,
       "allowedOrigins": ["*"]
@@ -209,11 +230,28 @@ cat > ~/openclaw/config.json << 'EOF'
       }
     }
   },
+  "tools": {
+    "web": {
+      "search": {
+        "provider": "brave",
+        "maxResults": 5,
+        "timeoutSeconds": 30
+      }
+    }
+  },
   "plugins": {
     "slots": {
       "memory": "memory-lancedb"
     },
     "entries": {
+      "brave": {
+        "enabled": true,
+        "config": {
+          "webSearch": {
+            "apiKey": "${BRAVE_SEARCH_API}"
+          }
+        }
+      },
       "memory-lancedb": {
         "enabled": true,
         "config": {
@@ -259,7 +297,7 @@ EOF
 ```bash
 mkdir -p ~/openclaw/docker
 cat > ~/openclaw/docker/Dockerfile << 'EOF'
-ARG BASE_IMAGE=acrdgonor2.azurecr.io/openclaw:v2
+ARG BASE_IMAGE=acrdgonor2.azurecr.io/openclaw:v3
 FROM ${BASE_IMAGE}
 
 USER root
@@ -349,8 +387,8 @@ set -euo pipefail
 source "$(dirname "$0")/env.sh"
 
 : "${ACR_NAME:?ACR_NAME not set}"
-: "${BASE_TAG:?BASE_TAG not set in env.sh (e.g. v2)}"
-: "${CUSTOM_TAG:?CUSTOM_TAG not set in env.sh (e.g. custom-v2-5)}"
+: "${BASE_TAG:?BASE_TAG not set in env.sh (e.g. v3)}"
+: "${CUSTOM_TAG:?CUSTOM_TAG not set in env.sh (e.g. custom-v3-1)}"
 
 DOCKER_DIR="$(dirname "$0")/docker"
 
@@ -450,9 +488,38 @@ az container show --resource-group "$RG" --subscription "$SUBSCRIPTION" --name "
 echo
 echo "Access the UI:"
 echo "  http://openclaw.${LOCATION}.azurecontainer.io:18789/"
-echo "Fetch the gateway token:"
-echo "  az container exec --resource-group $RG --subscription $SUBSCRIPTION --name $CONTAINER \\"
-echo "    --exec-command \"gosu node node -e console.log(JSON.parse(require(String.fromCharCode(102,115)).readFileSync('/home/node/.openclaw/openclaw.json')).gateway.auth.token)\""
+echo
+echo "==> Fetching Gateway Token"
+TOKEN=$(az container exec --resource-group "$RG" --subscription "$SUBSCRIPTION" --name "$CONTAINER" \
+  --exec-command "gosu node node -e console.log(JSON.parse(require(String.fromCharCode(102,115)).readFileSync('/home/node/.openclaw/openclaw.json')).gateway.auth.token)" 2>&1 \
+  | tr -d '\r' | grep -E '^[a-f0-9]{32,}$' | head -n1)
+if [ -n "$TOKEN" ]; then
+  echo "Gateway Token: $TOKEN"
+else
+  echo "WARNING: could not extract Gateway Token. Run manually:"
+  echo "  az container exec --resource-group \"\$RG\" --subscription \"\$SUBSCRIPTION\" --name \"\$CONTAINER\" \\"
+  echo "    --exec-command \"gosu node node -e console.log(JSON.parse(require(String.fromCharCode(102,115)).readFileSync('/home/node/.openclaw/openclaw.json')).gateway.auth.token)\""
+fi
+
+cat <<EOF
+
+==> Next steps: pair this browser
+
+1. Open the UI in your browser, paste the Gateway Token above, and click Connect.
+   The first connect from a new browser will be queued for approval.
+
+2. List pending pairing requests (note the requestId):
+     source ~/openclaw/env.sh
+     az container exec --resource-group "\$RG" --subscription "\$SUBSCRIPTION" --name "\$CONTAINER" \\
+       --exec-command "gosu node openclaw devices list"
+
+3. Approve it:
+     az container exec --resource-group "\$RG" --subscription "\$SUBSCRIPTION" --name "\$CONTAINER" \\
+       --exec-command "gosu node openclaw devices approve <requestId>"
+
+The browser reconnects automatically once approved. Pairings persist across redeploys
+(stored under /mnt/openclaw-workspace/_state/identity/).
+EOF
 SCRIPT
 
 chmod +x ~/openclaw/deploy.sh
@@ -626,16 +693,17 @@ OpenClaw also supports hot-reload of *some* keys without full container recreati
 
 ### Update upstream OpenClaw image
 
-When upstream publishes a newer tag (e.g. `v3`):
+When upstream publishes a newer tag (e.g. `v4`):
 
 ```bash
 # 1. Push the new upstream tag to ACR (or use az acr import)
-docker tag <new-image> acrdgonor2.azurecr.io/openclaw:v3
-docker push acrdgonor2.azurecr.io/openclaw:v3
+az acr import --name acrdgonor2 \
+  --source ghcr.io/openclaw/openclaw:<new-version>-slim \
+  --image openclaw:v4
 
 # 2. Bump tags in env.sh
-sed -i '' 's/BASE_TAG=v2/BASE_TAG=v3/' ~/openclaw/env.sh
-sed -i '' 's/CUSTOM_TAG=custom-v2-5/CUSTOM_TAG=custom-v3-1/' ~/openclaw/env.sh
+sed -i '' 's/BASE_TAG=v3/BASE_TAG=v4/' ~/openclaw/env.sh
+sed -i '' 's/CUSTOM_TAG=custom-v3-1/CUSTOM_TAG=custom-v4-1/' ~/openclaw/env.sh
 
 # 3. Rebuild + redeploy
 ~/openclaw/build-image.sh
@@ -710,7 +778,7 @@ ACI splits `--exec-command` on whitespace and passes quotes literally. To avoid 
 
 ### Setting `ENTRYPOINT` in a child Dockerfile **resets** the parent's `CMD`
 
-If you `FROM openclaw:v2` and add `ENTRYPOINT [...]`, Docker discards the parent image's `CMD`. Result: your entrypoint receives no args, `docker-entrypoint.sh` exits with rc=0, and the container loops with no openclaw process — **all without any error log**.
+If you `FROM openclaw:v3` and add `ENTRYPOINT [...]`, Docker discards the parent image's `CMD`. Result: your entrypoint receives no args, `docker-entrypoint.sh` exits with rc=0, and the container loops with no openclaw process — **all without any error log**.
 
 Always re-declare `CMD` after `ENTRYPOINT`:
 ```dockerfile
