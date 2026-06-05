@@ -7,6 +7,24 @@ description: Use when working in honoyr/openclaw-deploy (Azure Container Instanc
 
 The OpenClaw deploy ships as an ACI container fronted by Cloudflare Tunnel. State lives on the container's ephemeral disk and snapshots to Azure Blob every 30 min. This skill captures the patterns that have to be followed to avoid the failure modes we've already hit in production.
 
+## Rule #0 — Check the official docs FIRST
+
+Before implementing any feature, fix, or workaround, **read [docs.openclaw.ai](https://docs.openclaw.ai/)** for the relevant area. OpenClaw ships a lot of native capabilities that are easy to miss and almost always better than rolling our own:
+
+- **CLI surface:** `docs.openclaw.ai/cli/<cmd>` (e.g. `/cli/cron`, `/cli/mcp`, `/cli/devices`, `/cli/configure`, `/cli/doctor`). The CLI itself prints its docs URL in `--help` output — follow that link before scripting around the command.
+- **Config schema:** `docs.openclaw.ai/config/*` — authoritative field reference. Cross-check against the in-container Zod schema (see §2 below) when a doc field doesn't match the deployed version.
+- **Plugins:** `docs.openclaw.ai/plugins/*` — each plugin's setup, required config keys, env vars, and limitations. Check the version compatibility note before pinning.
+- **Channels / Gateway / Skills:** `docs.openclaw.ai/channels/*`, `/gateway/*`, `/skills/*` — covers webhook patterns, channel routing, skill format, and the agent harness.
+- **Release notes / changelog:** check before bumping `UPSTREAM_PIN` — breaking schema changes and plugin-API floor bumps are called out there.
+
+Workflow on every new request:
+1. **Search the docs** for the exact feature (use `web_fetch` against `https://docs.openclaw.ai/...`). Note any CLI command, config key, or plugin that already solves the problem.
+2. **Verify against the deployed version** — `openclaw <subcmd> --help` inside the container shows the actual CLI surface; the docs may describe a newer or older API.
+3. **Only build custom glue** when the native path genuinely doesn't exist or is documented as not applicable. Prefer `openclaw mcp set` over hand-editing `openclaw.json`. Prefer `openclaw cron add` over writing a cron file directly. Prefer `openclaw configure --section …` for guided changes over jq surgery.
+4. **Cite the doc URL** in commit messages so the next session can verify the source.
+
+If the docs and the deployed version disagree, the deployed version wins (we ran into 2026.5.x → 2026.6.x format changes mid-session). Note the divergence in the commit message and consider opening an upstream issue.
+
 ## Always-true facts
 
 - Container runs as user `node` (HOME=`/home/node`). NOT root.
