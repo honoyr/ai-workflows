@@ -1,5 +1,12 @@
 # claude-starter-kit
 
+> [!WARNING]
+> **Deprecated — superseded by [`ai-claude-toolbox`](https://github.com/honoyr/ai-claude-toolbox).**
+> This repo's orchestrator role (cross-repo `docs/wip/` specs, shared guides, and
+> custom skills) has moved to `ai-claude-toolbox`, which is built on
+> [`serpro69/claude-toolbox`](https://github.com/serpro69/claude-toolbox) and hosts
+> the project registry for all repos under `~/repos`. Do new cross-repo work there.
+
 [![Mentioned in Awesome Claude Code](https://awesome.re/mentioned-badge-flat.svg)](https://github.com/hesreallyhim/awesome-claude-code)
 
 Starter template repo for all your Claude Code needs — pre-configured MCP servers, skills, sub-agents, commands, and hooks for AI-powered development workflows.
