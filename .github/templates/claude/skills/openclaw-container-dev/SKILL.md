@@ -15,7 +15,7 @@ Before implementing any feature, fix, or workaround, **read [docs.openclaw.ai](h
 - **Config schema:** `docs.openclaw.ai/config/*` — authoritative field reference. Cross-check against the in-container Zod schema (see §2 below) when a doc field doesn't match the deployed version.
 - **Plugins:** `docs.openclaw.ai/plugins/*` — each plugin's setup, required config keys, env vars, and limitations. Check the version compatibility note before pinning.
 - **Channels / Gateway / Skills:** `docs.openclaw.ai/channels/*`, `/gateway/*`, `/skills/*` — covers webhook patterns, channel routing, skill format, and the agent harness.
-- **Release notes / changelog:** check before bumping `UPSTREAM_PIN` — breaking schema changes and plugin-API floor bumps are called out there.
+- **Release notes / changelog:** see Rule #0a — mandatory pre-redeploy review.
 
 Workflow on every new request:
 1. **Search the docs** for the exact feature (use `web_fetch` against `https://docs.openclaw.ai/...`). Note any CLI command, config key, or plugin that already solves the problem.
@@ -24,6 +24,34 @@ Workflow on every new request:
 4. **Cite the doc URL** in commit messages so the next session can verify the source.
 
 If the docs and the deployed version disagree, the deployed version wins (we ran into 2026.5.x → 2026.6.x format changes mid-session). Note the divergence in the commit message and consider opening an upstream issue.
+
+## Rule #0a — MANDATORY pre-redeploy version review
+
+**Never bump `UPSTREAM_PIN` and deploy without first reading the upstream release notes for every version in the gap.** Silent format migrations between releases have already cost session/cron state in production (e.g. 2026.5.x → 2026.6.x rewrote cron job format; 2026.5.7 lancedb didn't export bridge artifacts; user reported partial session-history loss after one redeploy). Future bumps must be reviewed, not blind.
+
+Required steps before any redeploy that crosses a release boundary (this includes bumping from any `-beta.N` to `-beta.N+1`, or from beta to stable):
+
+1. **Identify the version range** you're crossing — current pin → target pin (e.g. `2026.6.10-beta.1` → `2026.6.10-beta.2` or `2026.6.10`).
+2. **Fetch the full changelog** for that range:
+   - `https://raw.githubusercontent.com/openclaw/openclaw/main/CHANGELOG.md` (latest stable changelog)
+   - `https://api.github.com/repos/openclaw/openclaw/releases?per_page=20` (per-release notes including betas)
+   - `https://registry.npmjs.org/openclaw` for the `dist-tags` (`latest`, `beta`, `alpha`) and full version list — confirm you're picking the right target.
+3. **Scan every release note in the gap** for these red flags (in priority order):
+   - **Breaking changes / migrations** — schema rewrites, deprecated fields, removed CLI verbs, renamed plugin IDs. Anything that says "migrate" or "rename" or "removed".
+   - **State-format changes** — sessions, cron jobs, MCP servers, devices, identity, credentials. These have silently zeroed user data in the past.
+   - **Plugin API floor bumps** — host raised `pluginApi`, our pinned plugins may now refuse to load.
+   - **Auth / credential format changes** — OAuth refresh tokens, auth-profile schema.
+   - **Default value changes** — anything that flips a behavior (e.g. agent fast-mode default, sandbox default).
+   - **Channel adapter changes** — Telegram/WhatsApp/Slack auth flow, account routing.
+4. **Document findings in the commit message** — even a one-line "Reviewed notes for 2026.6.10-beta.1..2026.6.10-beta.2: 1 PR, no breaking changes, session-state hardening (#95328) is a net positive" creates the audit trail the next session needs.
+5. **Plan migrations explicitly** before bumping the pin. If a migration is needed, write it as a pre-deploy step in `scripts/deploy.sh` or a one-off recovery in `docker/openclaw-init.sh` (idempotent), commit + push before the rebuild.
+6. **Bump plugin pins in lockstep** if the new host raises `pluginApi`. Cross-check each pinned plugin (`brave-plugin`, `codex`, `acpx`, `memory-lancedb`, `voice-call`) against the new host's pluginApi floor via npm registry before the rebuild — see Rule #4 below.
+7. **Validate the candidate config against the NEW version's Zod schema offline** before deploying (see §2 below) — the live container's schema gate auto-skips on version mismatch, so the offline pull-and-parse against the target image is the only pre-deploy safety net for cross-version deploys.
+8. **State snapshot freshness** — confirm the most recent `state-snapshot` ran successfully within the last 30 min before kicking the rebuild. The redeploy recreates the container; whatever's in `/var/openclaw-state` gets restored from `azure-state:openclaw-state-snapshots/latest/`. If the last snapshot is stale or failed, you risk restoring from an older state.
+
+**If you're crossing more than one release boundary** (e.g. 2026.6.5-beta.5 → 2026.6.10-beta.2 skips beta.6, beta.7, .8, .9), review the cumulative changelog and treat every intermediate as if you were stopping there — silent migrations chain across versions and may not be obvious from end-to-end notes.
+
+**Default to `beta` dist-tag for development convenience, stable for production safety.** Going to `latest` (stable) over the newest `beta` skips intermediate bake but gets community-tested code; going to `beta` gets new features sooner but with higher silent-migration risk. The user explicitly stated they want the latest beta — honor that, but the review is non-negotiable either way.
 
 ## Always-true facts
 
@@ -136,11 +164,30 @@ Never bake secrets into `OPENCLAW_CONFIG_B64` from `config/config.json` (it's co
 
 ## Smoke-test contract
 
-`./scripts/smoke-prod.sh` runs 27 probes (Tier 3). When you add a new piece of infrastructure that can silently break:
+`./scripts/smoke-prod.sh` runs the numbered Tier 3 probe suite. When you add a new piece of infrastructure that can silently break:
 - Add a probe — see existing probes #17, #22-#27 as templates.
 - Hard-fail (`log_fail`) for class-A regressions (silent loss, data corruption). Warn-only (`log_warn`) for transient/cosmetic.
 - Each probe must have a header comment citing the historical incident it prevents.
 - Re-run smoke after any deploy; commit only when all probes pass (probe count varies — match the current TAP plan).
+
+## Workflow-failure investigation contract
+
+Every failed, cancelled, timed-out, stale, or startup-failed GitHub Actions run
+must be investigated. Do not dismiss a failure because production appears
+healthy or because another workflow passed.
+
+1. Read the failed job and step logs and recent run history.
+2. Classify the root cause: code/config, workflow permissions or secrets, test
+   assumption/flake, migration/state, or external dependency.
+3. Fix the cause rather than weakening a valid assertion. Prefer native
+   OpenClaw or in-container health surfaces over duplicating production secrets
+   into GitHub Actions.
+4. If deployment is required, follow Rule #0a, verify snapshot freshness,
+   preserve devices/cron/sessions, and run the complete production smoke.
+5. Close the investigation only after a newer successful default-branch run.
+
+The repository watchdog is diagnostic only. It may create, refresh, reopen, and
+close marker-owned issues, but it must never deploy or mutate production.
 
 ## Telegram errors are canaries
 
