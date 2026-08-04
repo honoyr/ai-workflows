@@ -189,6 +189,51 @@ healthy or because another workflow passed.
 The repository watchdog is diagnostic only. It may create, refresh, reopen, and
 close marker-owned issues, but it must never deploy or mutate production.
 
+## Daily improvement loop contract
+
+`openclaw-improvement-agent` runs Copilot CLI daily in Actions and files a
+marker-owned `openclaw-improvement` issue (plus, for low-risk paths, a draft PR).
+It exists to catch what deterministic keyword matching cannot: that upstream now
+ships natively what we hand-rolled, or that a coming release will break an
+assumption our scripts depend on.
+
+**It proposes. It never deploys.** A proposal is an input to your judgement, not
+an instruction. Before acting on one:
+
+1. **Re-verify the citation yourself.** The agent reads third-party release notes
+   and doc pages; treat both as untrusted. Confirm the doc URL says what the
+   finding claims, and confirm the CLI verb exists *at the deployed pin* with
+   `openclaw <cmd> --help` in-container — the docs routinely describe a newer
+   API than we run.
+2. **A native-replacement finding still owes you a migration.** "Upstream has
+   `openclaw backup`" does not mean our snapshot glue is safe to delete; check
+   whether the native path covers the whole job (remote storage, freshness
+   stamp, restore-on-boot) before removing anything. Replace only when the
+   native path measurably outperforms ours.
+3. **Migration-risk findings about prerelease versions are gates, not tasks.**
+   Record the check, do not act until the version is on `latest`.
+4. **Then follow the normal rules** — Rule #0a review, offline schema
+   validation, `WRAPPER_REV` bump for `docker/*`, snapshot freshness, full smoke.
+
+Guardrails you must not weaken when editing that workflow:
+
+- **The model job holds a read-only token.** `review` runs Copilot with
+  `contents: read` and uploads a patch; `publish` holds the write token and runs
+  no model. A deny list of binary names is not a boundary — anything that can run
+  `node` can call the Contents API. Never merge the two jobs, and never grant
+  `contents: write` to the job that invokes a model.
+- **The guard and its policy are read from the committed blob**, and staged into
+  `$RUNNER_TEMP` from a clean checkout before the patch is applied. Otherwise the
+  agent can overwrite `config/agent-change-policy.json` with `{"allow":["**"]}`
+  and walk through. `test/test-improvement-agent.sh` asserts exactly this; if you
+  change the guard, that test must still fail on a worktree-reading version.
+- **`deploy.sh`, `docker/**`, `config/config.json`, `scripts/env.sh*`, and
+  `.github/workflows/**` are deny-listed.** Widening the allowlist is a security
+  change, not a convenience change.
+- **A crash, a failed review job, or degraded context collection must publish as
+  actionable**, never as a silent "nothing to report" — a loop that fails closed
+  into silence is worse than no loop.
+
 ## Telegram errors are canaries
 
 These exact messages indicate underlying infrastructure issues — investigate, do not dismiss:
