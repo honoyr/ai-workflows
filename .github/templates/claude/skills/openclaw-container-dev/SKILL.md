@@ -139,6 +139,53 @@ After the SMB→Blob migration, agent skills and user vault docs still reference
 
 When changing any infrastructure path again, audit ALL refs in `docker/skills/`, `docker/`, the user's vault repo, and the agent's cached memory — then add a new compat symlink as a safety net.
 
+### 7. A hardcoded member of a growing set silently multiplies cost
+
+`docker/state-snapshot.sh` excluded regenerable plugin caches with globs pinned to one
+agent: `_state/agents/main/agent/codex-home/.tmp/**`. Every agent added later
+(`gemini`, `trading`, `test`) therefore snapshotted its entire cache. Combined with an
+`rclone sync` that lacked `--fast-list` (one `ListBlobs` per directory), the remote grew
+to 8,138 directories / 17,958 blobs — 96% junk — and Azure billed ~800k list operations
+per day. Cost walked $0.04/day → $0.90/day (Jun 21, `355856e`) → $4.00/day (Aug 4,
+`cdb95a2`), i.e. a ~$120/mo run rate, and went **six weeks undetected** because the
+absolute number hid inside a larger bill. Fixed in `c3eeb7e`; ListBlobs fell
+34,065/hr → 54/hr.
+
+Rules that follow from this:
+
+- **Never pin a path glob to a single agent, persona, or channel.** Wildcard the varying
+  segment (`_state/agents/*/…`). The set of agents grows; the glob won't.
+- **Every `rclone` call that walks a remote must pass `--fast-list`** — `sync`, `delete`,
+  `size`, `copy`. Without it, cost scales with directory count, not data.
+- **`rclone sync` never deletes excluded paths** (filters apply to both sides), so fixing
+  an exclude does not clean up what it already uploaded. Purge with
+  `rclone delete --include` mirroring the exclude list — **not** `rclone purge`, which
+  ignores filters and deletes the whole path.
+- **Test the live definition, not a restatement of it.** `test/test-snapshot-excludes.sh`
+  parses the `EXCLUDES` array out of the script itself and asserts against *every* agent,
+  so a new agent cannot regress it. Scope such tests to every rclone script in `docker/`,
+  not one file — this bug survived as an unpatched clone in
+  `docker/rclone-workspace-backup.sh` precisely because the test was single-file.
+- **Grep for clones before closing.** A fix applied to one copy of a copy-pasted script is
+  not a fix.
+
+### 8. Cost regressions need a ratio alarm, not a budget
+
+Azure budgets are absolute-threshold and fire far too late: the storage regression above
+was $32 hidden inside a $195 bill, never crossing any sane absolute limit. Detection has
+to be relative and per-meter.
+
+- Query cost with `az rest --method post` against
+  `…/providers/Microsoft.CostManagement/query?api-version=2023-11-01`.
+  **`az costmanagement` does not exist and `az consumption usage list` returns null cost
+  fields** on the modern billing schema.
+- Data lags 24–36h; the most recent day is partial. Lag every window by a day.
+- The validated rule is `recent3day / prior14day >= 1.75 AND delta >= $0.50/day`, per
+  meter. Ratio alone fires on noise from cheap meters; delta alone is just a budget.
+  A 2.0x threshold was backtested against 57 days of real billing and **misses a real
+  regression** — do not round it up. See `docs/adr/0004-cost-anomaly-guardrail.md`.
+- Backtest any threshold you propose against real billing history before shipping it.
+
 ## Rebuild discipline
 
 ```
